@@ -22,7 +22,10 @@
 
         <div class="form-row">
           <div class="form-group  ">
-            <label class="form-label">{{ trans.bgImage }}</label>
+            <label class="form-label">
+              {{ trans.bgImage }}
+              <HelpTooltip :text="trans.remoteImageTip" />
+            </label>
             <div class="flex" style="gap:8px;">
               <input type="text" v-model="settings.custom_bg" class="form-input flex-1" placeholder="https://...">
               <div class="upload-btn-wrapper">
@@ -34,7 +37,10 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label">{{ trans.favicon }}</label>
+            <label class="form-label">
+              {{ trans.favicon }}
+              <HelpTooltip :text="trans.remoteImageTip" />
+            </label>
             <div class="flex" style="gap:8px;">
               <input type="text" v-model="settings.favicon" class="form-input flex-1" placeholder="https://...">
               <div class="upload-btn-wrapper">

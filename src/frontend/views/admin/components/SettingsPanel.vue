@@ -95,7 +95,7 @@
 
           <div class="form-group flex-1">
             <label class="form-label">{{ trans.customScript }}</label>
-            <textarea v-model="settings.custom_script" class="form-textarea" rows="4" placeholder="console.log('Hello');">
+            <textarea v-model="settings.custom_script" class="form-textarea" rows="3" placeholder="console.log('Hello');">
             </textarea>
           </div>
         </div>

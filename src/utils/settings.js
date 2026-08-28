@@ -4,7 +4,7 @@ import {
   SITE_SETTINGS_CACHE_TTL_MS
 } from './config.js';
 
-export const APPEARANCE_FIELDS = ['site_title', 'custom_bg', 'custom_bg_mobile', 'favicon', 'custom_head', 'custom_script', 'csp_static', 'csp_api', 'display_mode', 'theme_options'];
+export const APPEARANCE_FIELDS = ['site_title', 'custom_bg', 'custom_bg_mobile', 'favicon', 'custom_head', 'custom_script', 'csp_static', 'csp_api', 'display_mode', 'preferred_theme', 'default_language', 'theme_options'];
 
 export const SITE_FIELDS = ['is_public', 'show_price', 'show_expire', 'show_tf', 'show_three_net_details', 'wss_report_enabled', 'wss_report_hours', 'frontend_ws_timeout_minutes', 'long_history_points', 'tg_notify', 'tg_bot_token', 'tg_chat_id', 'notification_timezone', 'expire_notification_time', 'notification_webhook_enabled', 'notification_webhook_url', 'notification_webhook_method', 'notification_webhook_format', 'notification_webhook_headers', 'notification_webhook_body', 'notification_template', 'turnstile_enabled', 'turnstile_login_enabled', 'turnstile_site_key', 'turnstile_secret_key', 'jwt_secret', 'username', 'password', 'cloudflare_account_id', 'cloudflare_token', 'custom_ct', 'custom_cu', 'custom_cm', 'custom_bd', 'expire_reminder', 'resource_alert_rules', 'theme_url', 'history_id_optimized','servers_optimized'];
 
@@ -67,6 +67,8 @@ const defaults = {
   csp_static: '',
   csp_api: '',
   display_mode: 'ring',
+  preferred_theme: 'auto',
+  default_language: 'auto',
   theme_options: {},
   is_public: 'true',
   show_price: 'true',
@@ -443,6 +445,18 @@ export function normalizeDisplayMode(value, fallback = 'bar') {
   return fallback === 'ring' || fallback === 'table' ? fallback : 'bar';
 }
 
+export function normalizePreferredTheme(value, fallback = 'auto') {
+  const theme = String(value || '').trim().toLowerCase();
+  if (theme === 'dark' || theme === 'light' || theme === 'auto') return theme;
+  return fallback === 'dark' || fallback === 'light' ? fallback : 'auto';
+}
+
+export function normalizeDefaultLanguage(value, fallback = 'auto') {
+  const language = String(value || '').trim().toLowerCase();
+  if (language === 'zh' || language === 'en' || language === 'auto') return language;
+  return fallback === 'zh' || fallback === 'en' ? fallback : 'auto';
+}
+
 export function normalizeBooleanSetting(value, fallback = 'false') {
   if (value === true || value === 1) return 'true';
   if (value === false || value === 0 || value === null || value === undefined || value === '') return 'false';
@@ -673,6 +687,9 @@ export async function loadAppearanceOptions(db) {
       copyFields(result, legacy, APPEARANCE_FIELDS);
     }
     copyFields(result, appearanceOptions, APPEARANCE_FIELDS);
+    result.display_mode = normalizeDisplayMode(result.display_mode, defaults.display_mode);
+    result.preferred_theme = normalizePreferredTheme(result.preferred_theme);
+    result.default_language = normalizeDefaultLanguage(result.default_language);
   } catch (e) {
     console.error('加载外观设置失败:', e);
   }

@@ -21,6 +21,26 @@
         </div>
 
         <div class="form-row">
+          <div class="form-group flex-1">
+            <label class="form-label">{{ trans.defaultTheme }}</label>
+            <select v-model="settings.preferred_theme" class="form-select">
+              <option value="auto">{{ trans.themeAuto }}</option>
+              <option value="dark">{{ trans.themeDark }}</option>
+              <option value="light">{{ trans.themeLight }}</option>
+            </select>
+          </div>
+
+          <div class="form-group flex-1">
+            <label class="form-label">{{ trans.defaultLanguage }}</label>
+            <select v-model="settings.default_language" class="form-select">
+              <option value="auto">{{ trans.languageAuto }}</option>
+              <option value="zh">{{ trans.languageChinese }}</option>
+              <option value="en">{{ trans.languageEnglish }}</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
           <div class="form-group  ">
             <label class="form-label">
               {{ trans.bgImage }}
@@ -246,16 +266,17 @@
               {{ trans.notificationTimezone || 'Notification Timezone' }}
               <HelpTooltip :text="trans.notificationTimezoneTip || 'Used only for notification output times and expiration reminder schedule.'" />
             </label>
+            <select v-model="selectedNotificationTimezone" class="form-select">
+              <option v-for="timezone in commonNotificationTimezones" :key="timezone" :value="timezone">{{ timezone }}</option>
+              <option :value="CUSTOM_NOTIFICATION_TIMEZONE_VALUE">{{ trans.custom || 'Custom' }}</option>
+            </select>
             <input
+              v-if="showCustomNotificationTimezone"
               type="text"
-              list="notification-timezone-options"
               v-model.trim="settings.notification_timezone"
-              class="form-input"
-              placeholder="UTC"
+              class="form-input mt-2"
+              placeholder="Asia/Shanghai"
             >
-            <datalist id="notification-timezone-options">
-              <option v-for="timezone in commonNotificationTimezones" :key="timezone" :value="timezone"></option>
-            </datalist>
           </div>
 
           <div class="form-group flex-1">
@@ -667,7 +688,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import HelpTooltip from '../../../components/HelpTooltip.vue'
 import { FRONTEND_WS_TIMEOUT_MINUTES_MAX, HISTORY } from '../../../utils/constants.js'
 import { currentLang } from '../../../utils/i18n.js'
@@ -704,6 +725,39 @@ const commonNotificationTimezones = [
   'America/New_York',
   'America/Los_Angeles'
 ]
+const CUSTOM_NOTIFICATION_TIMEZONE_VALUE = '__custom__'
+const manualCustomNotificationTimezone = ref(false)
+const isCommonNotificationTimezone = (value) => commonNotificationTimezones.includes(String(value || '').trim())
+
+const selectedNotificationTimezone = computed({
+  get: () => {
+    const currentTimezone = String(props.settings.notification_timezone || '').trim()
+    if (manualCustomNotificationTimezone.value || (currentTimezone && !isCommonNotificationTimezone(currentTimezone))) {
+      return CUSTOM_NOTIFICATION_TIMEZONE_VALUE
+    }
+    return currentTimezone || 'UTC'
+  },
+  set: (value) => {
+    if (value === CUSTOM_NOTIFICATION_TIMEZONE_VALUE) {
+      manualCustomNotificationTimezone.value = true
+      return
+    }
+    manualCustomNotificationTimezone.value = false
+    props.settings.notification_timezone = value
+  }
+})
+
+const showCustomNotificationTimezone = computed(() => selectedNotificationTimezone.value === CUSTOM_NOTIFICATION_TIMEZONE_VALUE)
+
+watch(
+  () => props.settings.notification_timezone,
+  (value) => {
+    if (!String(value || '').trim() || isCommonNotificationTimezone(value)) {
+      manualCustomNotificationTimezone.value = false
+    }
+  }
+)
+
 const expireNotificationHourOptions = Array.from({ length: 24 }, (_, hour) => String(hour))
 
 const cspErrors = reactive({

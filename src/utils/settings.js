@@ -74,8 +74,8 @@ const defaults = {
   show_price: 'true',
   show_expire: 'true',
   show_tf: 'true',
-  show_three_net_details: 'false',
-  wss_report_enabled: 'false',
+  show_three_net_details: 'true',
+  wss_report_enabled: 'true',
   wss_report_hours: [...ALL_WSS_REPORT_HOURS],
   frontend_ws_timeout_minutes: '0',
   long_history_points: String(DEFAULT_LONG_HISTORY_POINTS),
@@ -459,7 +459,10 @@ export function normalizeDefaultLanguage(value, fallback = 'auto') {
 
 export function normalizeBooleanSetting(value, fallback = 'false') {
   if (value === true || value === 1) return 'true';
-  if (value === false || value === 0 || value === null || value === undefined || value === '') return 'false';
+  if (value === false || value === 0) return 'false';
+  if (value === null || value === undefined || value === '') {
+    return fallback === 'true' ? 'true' : 'false';
+  }
 
   const normalized = String(value).trim().toLowerCase();
   if (['true', '1', 'yes', 'on'].includes(normalized)) return 'true';
@@ -632,8 +635,8 @@ export async function loadSiteSettings(db, options = {}) {
     result.expire_reminder = normalizeExpireReminder(result.expire_reminder);
     result.long_history_points = normalizeLongHistoryPoints(result.long_history_points);
     result.resource_alert_rules = normalizeResourceAlertRules(result.resource_alert_rules);
-    result.show_three_net_details = normalizeBooleanSetting(result.show_three_net_details);
-    result.wss_report_enabled = normalizeBooleanSetting(result.wss_report_enabled);
+    result.show_three_net_details = normalizeBooleanSetting(result.show_three_net_details, defaults.show_three_net_details);
+    result.wss_report_enabled = normalizeBooleanSetting(result.wss_report_enabled, defaults.wss_report_enabled);
     result.wss_report_hours = normalizeWssReportHours(result.wss_report_hours);
     result.frontend_ws_timeout_minutes = normalizeFrontendWsTimeoutMinutes(result.frontend_ws_timeout_minutes);
     result.notification_webhook_enabled = normalizeBooleanSetting(result.notification_webhook_enabled);
@@ -757,8 +760,8 @@ export async function saveSiteOptions(db, updates) {
   siteOptions.expire_reminder = normalizeExpireReminder(siteOptions.expire_reminder);
   siteOptions.long_history_points = normalizeLongHistoryPoints(siteOptions.long_history_points);
   siteOptions.resource_alert_rules = normalizeResourceAlertRules(siteOptions.resource_alert_rules);
-  siteOptions.show_three_net_details = normalizeBooleanSetting(siteOptions.show_three_net_details);
-  siteOptions.wss_report_enabled = normalizeBooleanSetting(siteOptions.wss_report_enabled);
+  siteOptions.show_three_net_details = normalizeBooleanSetting(siteOptions.show_three_net_details, defaults.show_three_net_details);
+  siteOptions.wss_report_enabled = normalizeBooleanSetting(siteOptions.wss_report_enabled, defaults.wss_report_enabled);
   siteOptions.wss_report_hours = normalizeWssReportHours(siteOptions.wss_report_hours);
   siteOptions.frontend_ws_timeout_minutes = normalizeFrontendWsTimeoutMinutes(siteOptions.frontend_ws_timeout_minutes);
   siteOptions.notification_webhook_enabled = normalizeBooleanSetting(siteOptions.notification_webhook_enabled);

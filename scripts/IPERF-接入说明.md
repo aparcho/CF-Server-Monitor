@@ -12,7 +12,7 @@
 
 ## 准备
 
-1. 在 Cloudflare Worker 的 Variables and Secrets 中设置独立的 `IPERF_REPORT_TOKEN` Secret。不要复用 `API_SECRET`。部署工作流的 Wrangler 配置已加入 `keep_vars = true`，避免部署时删除已有 Secret。
+1. 在当前线上 Cloudflare Worker `cf-server-monitor` 的 Variables and Secrets 中设置独立的 `IPERF_REPORT_TOKEN` Secret。不要复用 `API_SECRET`。`wrangler.toml` 和 GitHub Actions 的 Wrangler 配置均已加入 `keep_vars = true`，避免部署时删除已有 Secret。仓库 Actions 工作流另写有 `server-monitor-pro`；配置 Secret 时应以线上实际绑定的 `cf-server-monitor` 为准。
 2. 在 deb 确认 `gw 1` 出口使用 `192.168.50.1`，安装 `iperf3`。目标 VPS 需准备**授权且隔离**的公网 TCP 监听端口，例如 `5202`；不要占用既有 `5201` 服务。此脚本不会启动或清理目标监听，只有确认监听和防火墙策略后才运行。
 3. 从 CFSM 管理后台查每台服务器的真实 `id`，创建仅存于 deb 的配置文件：
 

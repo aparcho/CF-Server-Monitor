@@ -1,0 +1,13 @@
+[Unit]
+Description=CFSM iperf3 job runner on deb
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /root/iperf-runner.py /root/cfsm-iperf-targets-lax.json --output /root/cfsm-iperf-results
+TimeoutStartSec=5min
+NoNewPrivileges=true
+PrivateTmp=true
+

@@ -97,6 +97,7 @@
             :class="{ active: activeTab === 'themeStore' }"
             @click="activeTab = 'themeStore'"
           >{{ trans.themeStore }}</button>
+          <button class="tab-btn" :class="{ active: activeTab === 'iperf' }" @click="activeTab = 'iperf'">测速</button>
           <button
             class="tab-btn"
             :class="{ active: activeTab === 'donation' }"
@@ -174,6 +175,7 @@
           @theme-options-applied="handleThemeOptionsApplied"
           @alert-message="alertMessage = $event"
         />
+        <IperfPanel :active-tab="activeTab" :servers="servers" :selected-api-index="selectedApiIndex" />
 
         <DonationPanel
           :trans="trans"
@@ -581,6 +583,7 @@ import ServerTable from './components/ServerTable.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import DatabasePanel from './components/DatabasePanel.vue'
 import ThemeStorePanel from './components/ThemeStorePanel.vue'
+import IperfPanel from './components/IperfPanel.vue'
 import DonationPanel from './components/DonationPanel.vue'
 import EditServerModal from './components/EditServerModal.vue'
 import BatchEditServersModal from './components/BatchEditServersModal.vue'

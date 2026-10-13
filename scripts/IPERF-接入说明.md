@@ -6,8 +6,9 @@
 
 - CFSM fork 基线：`eacb04720952f46d679f5bc99c9be98d62b74f3f`，本地备份 `../cf-server-monitor-pre-iperf-20261013.bundle`。
 - SAO 主题当前 `dist` 基线：`7112fdbaa7b0f6b79c1c2536e1ed9b1e67f12499`，本地备份 `../cfsm-sao-pre-iperf-20261013.bundle`。
-- 两份代码的改动均在 `feature/iperf-results` 分支。回滚 Worker 时部署上述 CFSM commit；回滚主题时将后台 `theme_url` 指回 SAO 的上述固定 commit。
+- CFSM 改动在 `aparcho/CF-Server-Monitor` 的 `feature/iperf-results` 分支；SAO 源码在 `aparcho/CFSM-SAO` 的同名分支，编译产物在该仓库的 `feature/iperf-dist` 分支。回滚 Worker 时部署上述 CFSM commit；回滚主题时将后台 `theme_url` 指回 SAO 的上述固定 commit。
 - CFSM 远端备份分支已创建：`aparcho/CF-Server-Monitor` 的 `backup/pre-iperf-20261013`，指向上述基线 commit。当前线上 SAO 主题使用 WAOR 仓库的固定 `dist` commit；该 commit 和本地 bundle 均可用于回滚。
+- SAO 新编译产物的固定地址：`https://github.com/aparcho/CFSM-SAO/tree/e4695898731f593a6c162e24659fe6c11f55a57f`。上线前先使用后台预览验证，再将 `theme_url` 切到该地址。
 
 ## 准备
 

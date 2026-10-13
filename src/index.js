@@ -7,7 +7,7 @@ import { handleUpdate, handleWebSocketUpgrade, handleUpdateWebSocketUpgrade } fr
 import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
 import { handleTheme } from './handlers/theme.js';
 import { handleIperfReport, handleIperfResults } from './handlers/iperf.js';
-import { handleIperfClaim, handleIperfFinish, enqueueDueIperfJobs } from './handlers/iperfJobs.js';
+import { handleIperfClaim, handleIperfFinish, handleIperfTargets, enqueueDueIperfJobs } from './handlers/iperfJobs.js';
 import { isValidThemeOptions, loadSettings, loadSiteSettings, loadAppearanceOptions, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, saveThemeOptions, setDebug, debug } from './utils/settings.js';
 import { omitNullLossProbeFields } from './handlers/dashboard.js';
 import { checkAuth, simpleAuthResponse } from './middleware/auth.js';
@@ -228,6 +228,7 @@ export default {
       '/api/iperf/report',
       '/api/iperf/jobs/claim',
       '/api/iperf/jobs/finish',
+      '/api/iperf/targets',
     ];
 
     const isApiRequest = path.startsWith('/api/') || path.startsWith('/admin/api');
@@ -286,6 +287,7 @@ export default {
       { method: 'POST', path: '/api/iperf/report', handler: () => handleIperfReport(request, env) },
       { method: 'POST', path: '/api/iperf/jobs/claim', handler: () => handleIperfClaim(request, env) },
       { method: 'POST', path: '/api/iperf/jobs/finish', handler: () => handleIperfFinish(request, env) },
+      { method: 'POST', path: '/api/iperf/targets', handler: () => handleIperfTargets(request, env) },
       { method: 'GET', path: '/api/iperf/results', handler: async () => {
         await ensureSiteSettings();
         return handleIperfResults(request, env, sys);

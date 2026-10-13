@@ -11,9 +11,9 @@
           <tr v-for="server in servers" :key="server.id">
             <td>{{ server.name || server.id }}</td>
             <td><select v-model.number="form(server.id).duration_seconds"><option :value="10">10 秒</option><option :value="30">30 秒</option></select></td>
-            <td><button class="btn" :disabled="loading || pending(server.id)" @click="trigger(server.id)">{{ pending(server.id) ? '任务进行中' : '开始测速' }}</button></td>
+            <td><button class="btn" :disabled="loading || pending(server.id) || !ready(server.id)" @click="trigger(server.id)">{{ !ready(server.id) ? '未接入 deb' : pending(server.id) ? '任务进行中' : '开始测速' }}</button></td>
             <td><label><input type="checkbox" v-model="form(server.id).enabled" /> 启用</label> <input type="time" v-model="form(server.id).time_beijing" /></td>
-            <td><button class="btn" :disabled="loading" @click="save(server.id)">保存定时</button></td>
+            <td><button class="btn" :disabled="loading || (form(server.id).enabled && !ready(server.id))" @click="save(server.id)">保存定时</button></td>
           </tr>
         </tbody>
       </table>
@@ -31,6 +31,7 @@ import { adminApi } from '../../../utils/api'
 
 const props = defineProps({ activeTab: String, servers: { type: Array, default: () => [] }, selectedApiIndex: Number })
 const jobs = ref([])
+const readyTargets = ref([])
 const forms = reactive({})
 const loading = ref(false)
 const message = ref('')
@@ -38,6 +39,7 @@ const error = ref(false)
 const form = (id) => forms[id] ||= { enabled: false, time_beijing: '03:00', duration_seconds: 10 }
 const serverName = (id) => props.servers.find(s => s.id === id)?.name || id
 const pending = (id) => jobs.value.some(j => j.server_id === id && ['queued', 'running'].includes(j.status))
+const ready = (id) => readyTargets.value.includes(id)
 const statusName = (status) => ({ queued: '等待执行', running: '测速中', completed: '已完成', failed: '失败' })[status] || status
 const formatTime = (ms) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'medium' }).format(new Date(ms))
 async function call(data) {
@@ -58,6 +60,7 @@ async function load() {
   const data = await call({ action: 'iperf_list' })
   if (!data) return
   jobs.value = data.jobs || []
+  readyTargets.value = data.ready_targets || []
   for (const schedule of data.schedules || []) Object.assign(form(schedule.server_id), { enabled: !!schedule.enabled, time_beijing: schedule.time_beijing, duration_seconds: schedule.duration_seconds })
 }
 async function trigger(id) {

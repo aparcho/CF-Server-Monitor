@@ -79,6 +79,8 @@ def main():
     token = Path(args.token_file).read_text().strip()
     if not token:
         raise ValueError('empty token file')
+    api(config['worker_url'], token, '/api/iperf/targets',
+        {'server_ids': [target['id'] for target in config['targets']]})
     job = api(config['worker_url'], token, '/api/iperf/jobs/claim', {})
     if not job:
         print('no queued job')

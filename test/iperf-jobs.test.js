@@ -25,7 +25,8 @@ test('北京时间 03:00 只为启用配置创建当日任务', async () => {
   await enqueueDueIperfJobs(db, Date.parse('2026-10-13T19:00:00Z'));
   const lookup = db.calls.find(x => x.sql.includes('WHERE s.enabled=1'));
   const insertion = db.calls.find(x => x.sql.includes('INSERT OR IGNORE INTO iperf_jobs'));
-  assert.deepEqual(lookup.args, ['03:00']);
+  assert.equal(lookup.args[0], '03:00');
+  assert.equal(lookup.args[1], Date.parse('2026-10-13T18:55:00Z'));
   assert.equal(insertion.args[4], '2026-10-14T03:00+08:00');
 });
 

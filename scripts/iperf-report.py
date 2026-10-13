@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 import uuid
 
 
@@ -89,9 +90,20 @@ def main():
     for start in range(0, len(rows), 8):
         req = urllib.request.Request(config["worker_url"].rstrip("/") + "/api/iperf/report",
             data=json.dumps({"results": rows[start:start + 8]}).encode(), method="POST",
-            headers={"Content-Type": "application/json", "X-Iperf-Token": token})
-        with urllib.request.urlopen(req, timeout=20) as response:
-            print(response.read().decode(), flush=True)
+            headers={"Content-Type": "application/json", "X-Iperf-Token": token,
+                     "User-Agent": "CFSM-Iperf/1.0"})
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    print(response.read().decode(), flush=True)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code < 500 or attempt == 2:
+                    raise
+            except (urllib.error.URLError, TimeoutError):
+                if attempt == 2:
+                    raise
+            time.sleep(2 * (attempt + 1))
 
 
 if __name__ == "__main__":

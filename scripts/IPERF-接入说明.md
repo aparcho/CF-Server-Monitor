@@ -34,6 +34,8 @@ python3 iperf-report.py targets.json --output ./iperf-results
 
 每个目标依次执行 IPv4 下载、上传及 IPv6 下载、上传；`下载/上传` 均以 deb 为视角。默认每项 30 秒，单流，下载使用 `-R`，两项之间等待 2 秒。脚本请求服务端 JSON 输出以读取反向发送端的 TCP 重传。原始 JSON 与 stderr 留在 `--output/<run_id>/`，摘要写入同目录并上报。失败或超时不会写成 `0 Mbps`，重传次数也不表示物理丢包。
 
+上报请求使用 `CFSM-Iperf/1.0` User-Agent；对 TLS/网络超时和服务端 5xx 最多重试两次。同一 `run_id` 在 D1 中幂等，重试不会生成重复记录。若测速成功但上报失败，应只重传已保存的 `summary.json`，不要自动重新测速。
+
 ## 验收
 
 - 上报成功返回 `{ "success": true, "count": ... }`；重复上报相同 `run_id` 只更新同一行。

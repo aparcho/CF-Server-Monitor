@@ -40,5 +40,13 @@ python3 iperf-report.py targets.json --output ./iperf-results
 
 - 上报成功返回 `{ "success": true, "count": ... }`；重复上报相同 `run_id` 只更新同一行。
 - SAO 节点详情出现 `iperf3 测速` 区域，按 IPv4/IPv6 和 deb 下载/上传显示最近结果、时间及测试条件。
-- 使用相同源、出口、地址族、端口、方向和时长比较历史结果。当前 UI 先展示最近结果；历史曲线与定时调度留给后续版本。
+- 使用相同源、出口、地址族、端口、方向和时长比较历史结果。SAO 节点详情显示最近结果，后台提供定时调度；历史曲线尚未加入。
 - 测速端口的结果只证明该端口与这条路径，不能直接认定 Reality 或其他代理服务的质量。
+
+## 手动触发与定时测速
+
+CFSM 后台新增“测速”页，可逐台选择 10 秒或 30 秒单项时长，点击“开始测速”，并配置每日北京时间。所有定时配置默认关闭，需逐台保存启用。Worker 每分钟只把到点的任务写入 D1，实际测试仍由 `deb` 执行。后台展示等待、执行、完成、失败及最近任务。
+
+`deb` 使用 `iperf-runner.py` 每分钟领取一个任务。只执行本机 JSON 白名单中的目标，目标需增加 `management_host`，例如 `root@lax`。执行器通过该管理连接在目标机临时启动 `5202` 监听，验证端口原本空闲及既有 `5201` 状态，然后调用 `iperf-report.py` 执行双栈、双向测试并上报；结束时按记录的 PID 清理监听，检查 `5201` 未变化。监听本身由 `timeout 600s` 兜底退出。目标机的 SSH 主机密钥应先核对并写入 deb 的 `known_hosts`，同时确认 `5202` 公网访问策略；未完成这些准备的节点不要加入白名单。
+
+可使用 `scripts/systemd/cfsm-iperf-runner.service` 和 `.timer` 在 deb 安装轮询。密钥仍仅保存在 `/root/.config/cfsm/iperf-token`，不写入 unit、仓库或浏览器。`iperf_jobs` 与 `iperf_schedules` 表由 Worker 自动创建。回滚时先停止 timer、等待正在运行的 service 完成，再部署备份 Worker；D1 历史任务和测速结果可保留，不影响旧版本运行。

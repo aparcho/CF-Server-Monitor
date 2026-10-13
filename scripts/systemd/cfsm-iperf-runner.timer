@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll CFSM iperf3 jobs every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+Unit=cfsm-iperf-runner.service
+
+[Install]
+WantedBy=timers.target

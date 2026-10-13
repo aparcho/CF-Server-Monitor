@@ -7,6 +7,7 @@ import { handleUpdate, handleWebSocketUpgrade, handleUpdateWebSocketUpgrade } fr
 import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
 import { handleTheme } from './handlers/theme.js';
 import { handleIperfReport, handleIperfResults } from './handlers/iperf.js';
+import { handleIperfClaim, handleIperfFinish, enqueueDueIperfJobs } from './handlers/iperfJobs.js';
 import { isValidThemeOptions, loadSettings, loadSiteSettings, loadAppearanceOptions, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, saveThemeOptions, setDebug, debug } from './utils/settings.js';
 import { omitNullLossProbeFields } from './handlers/dashboard.js';
 import { checkAuth, simpleAuthResponse } from './middleware/auth.js';
@@ -225,6 +226,8 @@ export default {
       '/admin/api',
       '/api/ws',
       '/api/iperf/report',
+      '/api/iperf/jobs/claim',
+      '/api/iperf/jobs/finish',
     ];
 
     const isApiRequest = path.startsWith('/api/') || path.startsWith('/admin/api');
@@ -281,6 +284,8 @@ export default {
 
     const routes = [
       { method: 'POST', path: '/api/iperf/report', handler: () => handleIperfReport(request, env) },
+      { method: 'POST', path: '/api/iperf/jobs/claim', handler: () => handleIperfClaim(request, env) },
+      { method: 'POST', path: '/api/iperf/jobs/finish', handler: () => handleIperfFinish(request, env) },
       { method: 'GET', path: '/api/iperf/results', handler: async () => {
         await ensureSiteSettings();
         return handleIperfResults(request, env, sys);
@@ -482,6 +487,7 @@ export default {
     const minute = now.getUTCMinutes();
     
     if (cron === '*/1 * * * *') {
+      await enqueueDueIperfJobs(env.DB, now.getTime());
       if (day === 0 && hour === 0 && minute < 5) {
         debug('[Cron] 每周日0:00-0:05表轮换期间，跳过离线节点检测');
       } else {

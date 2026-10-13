@@ -7,12 +7,14 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 import urllib.request
+import urllib.error
 import uuid
 
 
 def probe(server, family, address, direction, duration, port, run_id, output):
-    cmd = ["iperf3", "-J", "-c", address, "-p", str(port), "-t", str(duration),
+    cmd = ["iperf3", "-J", "-i", "1", "--get-server-output", "-c", address, "-p", str(port), "-t", str(duration),
            "-4" if family == "ipv4" else "-6"]
     if direction == "download":
         cmd.append("-R")
@@ -65,6 +67,8 @@ def main():
             if not address:
                 continue
             for direction in ("download", "upload"):
+                if rows:
+                    time.sleep(2)
                 try:
                     row = probe(server, family, address, direction, args.duration,
                                 int(server.get("port", 5202)), run_id, output)
@@ -86,9 +90,20 @@ def main():
     for start in range(0, len(rows), 8):
         req = urllib.request.Request(config["worker_url"].rstrip("/") + "/api/iperf/report",
             data=json.dumps({"results": rows[start:start + 8]}).encode(), method="POST",
-            headers={"Content-Type": "application/json", "X-Iperf-Token": token})
-        with urllib.request.urlopen(req, timeout=20) as response:
-            print(response.read().decode(), flush=True)
+            headers={"Content-Type": "application/json", "X-Iperf-Token": token,
+                     "User-Agent": "CFSM-Iperf/1.0"})
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    print(response.read().decode(), flush=True)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code < 500 or attempt == 2:
+                    raise
+            except (urllib.error.URLError, TimeoutError):
+                if attempt == 2:
+                    raise
+            time.sleep(2 * (attempt + 1))
 
 
 if __name__ == "__main__":

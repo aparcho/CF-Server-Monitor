@@ -8,14 +8,22 @@ import re
 import subprocess
 import sys
 import tempfile
-import urllib.request
 
 
 def api(base, token, path, payload):
-    request = urllib.request.Request(base.rstrip('/') + path, data=json.dumps(payload).encode(),
-        headers={'Content-Type': 'application/json', 'X-Iperf-Token': token, 'User-Agent': 'CFSM-Iperf/1.0'}, method='POST')
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+    if any(char in token for char in '\r\n"\\'):
+        raise ValueError('invalid token format')
+    with tempfile.NamedTemporaryFile(mode='w', prefix='.cfsm-curl-', dir='/root/.config/cfsm') as options:
+        options.write(f'header = "X-Iperf-Token: {token}"\n')
+        options.flush()
+        result = subprocess.run(['curl', '--silent', '--show-error', '--fail-with-body', '--ipv6',
+            '--connect-timeout', '10', '--max-time', '30', '--config', options.name,
+            '--header', 'Content-Type: application/json', '--header', 'User-Agent: CFSM-Iperf/1.0',
+            '--data-binary', '@-', base.rstrip('/') + path], input=json.dumps(payload),
+            text=True, capture_output=True, timeout=35)
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip()[:200] or 'Worker request failed')
+    return json.loads(result.stdout)
 
 
 def remote(host, script, timeout=20):

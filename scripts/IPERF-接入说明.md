@@ -49,4 +49,6 @@ CFSM 后台新增“测速”页，可逐台选择 10 秒或 30 秒单项时长�
 
 `deb` 使用 `iperf-runner.py` 每分钟领取一个任务。只执行本机 JSON 白名单中的目标，目标需增加 `management_host`，例如 `root@lax`。执行器通过该管理连接在目标机临时启动 `5202` 监听，验证端口原本空闲及既有 `5201` 状态，然后调用 `iperf-report.py` 执行双栈、双向测试并上报；结束时按记录的 PID 清理监听，检查 `5201` 未变化。监听本身由 `timeout 600s` 兜底退出。目标机的 SSH 主机密钥应先核对并写入 deb 的 `known_hosts`，同时确认 `5202` 公网访问策略；未完成这些准备的节点不要加入白名单。
 
+执行器每分钟把本机白名单同步到 Worker。最近五分钟未同步的节点在后台显示“未接入 deb”，不能手动触发或启用定时任务；已有定时任务在目标不可用时不会排队。当前只接入 `DMIT.LAX`，其余节点需逐台完成 SSH、端口和防火墙预检后加入 deb 白名单。
+
 可使用 `scripts/systemd/cfsm-iperf-runner.service` 和 `.timer` 在 deb 安装轮询。密钥仍仅保存在 `/root/.config/cfsm/iperf-token`，不写入 unit、仓库或浏览器。`iperf_jobs` 与 `iperf_schedules` 表由 Worker 自动创建。回滚时先停止 timer、等待正在运行的 service 完成，再部署备份 Worker；D1 历史任务和测速结果可保留，不影响旧版本运行。

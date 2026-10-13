@@ -18,6 +18,9 @@ export async function ensureIperfJobTables(db) {
     time_beijing TEXT NOT NULL DEFAULT '03:00', duration_seconds INTEGER NOT NULL DEFAULT 10,
     updated_at INTEGER NOT NULL
   )`).run();
+  await db.prepare(`CREATE TABLE IF NOT EXISTS iperf_targets (
+    server_id TEXT PRIMARY KEY, source TEXT NOT NULL, last_seen INTEGER NOT NULL
+  )`).run();
 }
 
 function validDuration(value) {
@@ -29,21 +32,29 @@ async function serverExists(db, id) {
   return !!await db.prepare('SELECT id FROM servers WHERE id = ?').bind(id).first();
 }
 
+async function targetReady(db, id, now = Date.now()) {
+  return !!await db.prepare('SELECT server_id FROM iperf_targets WHERE server_id=? AND last_seen>?')
+    .bind(id, now - 5 * 60_000).first();
+}
+
 export async function handleIperfAdminAction(data, env) {
   await ensureIperfJobTables(env.DB);
   const { action } = data;
   if (action === 'iperf_list') {
-    const [jobs, schedules] = await Promise.all([
+    const [jobs, schedules, targets] = await Promise.all([
       env.DB.prepare('SELECT * FROM iperf_jobs ORDER BY created_at DESC LIMIT 100').all(),
-      env.DB.prepare('SELECT * FROM iperf_schedules ORDER BY server_id').all()
+      env.DB.prepare('SELECT * FROM iperf_schedules ORDER BY server_id').all(),
+      env.DB.prepare('SELECT server_id FROM iperf_targets WHERE last_seen>?').bind(Date.now() - 5 * 60_000).all()
     ]);
-    return createSuccessResponse({ jobs: jobs.results || [], schedules: schedules.results || [] });
+    return createSuccessResponse({ jobs: jobs.results || [], schedules: schedules.results || [],
+      ready_targets: (targets.results || []).map(row => row.server_id) });
   }
   const id = data.server_id;
   if (typeof id !== 'string' || !SERVER_ID.test(id) || !await serverExists(env.DB, id)) return createBadRequestResponse('unknownServer');
   const duration = validDuration(data.duration_seconds);
   if (!duration) return createBadRequestResponse('invalidDuration');
   if (action === 'iperf_trigger') {
+    if (!await targetReady(env.DB, id)) return createBadRequestResponse('targetNotReadyOnDeb');
     const busy = await env.DB.prepare("SELECT id FROM iperf_jobs WHERE server_id = ? AND status IN ('queued','running') LIMIT 1").bind(id).first();
     if (busy) return createBadRequestResponse('iperfJobAlreadyPending');
     const jobId = crypto.randomUUID();
@@ -55,6 +66,7 @@ export async function handleIperfAdminAction(data, env) {
     const enabled = data.enabled === true ? 1 : data.enabled === false ? 0 : null;
     const time = data.time_beijing;
     if (enabled === null || typeof time !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return createBadRequestResponse('invalidIperfSchedule');
+    if (enabled && !await targetReady(env.DB, id)) return createBadRequestResponse('targetNotReadyOnDeb');
     await env.DB.prepare(`INSERT INTO iperf_schedules (server_id,enabled,time_beijing,duration_seconds,updated_at)
       VALUES (?,?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET enabled=excluded.enabled,
       time_beijing=excluded.time_beijing,duration_seconds=excluded.duration_seconds,updated_at=excluded.updated_at`)
@@ -70,7 +82,8 @@ export async function enqueueDueIperfJobs(db, now = Date.now()) {
   const date = local.toISOString().slice(0, 10);
   const time = local.toISOString().slice(11, 16);
   const schedules = await db.prepare(`SELECT s.* FROM iperf_schedules s JOIN servers v ON v.id=s.server_id
-    WHERE s.enabled=1 AND s.time_beijing=?`).bind(time).all();
+    JOIN iperf_targets t ON t.server_id=s.server_id
+    WHERE s.enabled=1 AND s.time_beijing=? AND t.last_seen>?`).bind(time, now - 5 * 60_000).all();
   for (const schedule of schedules.results || []) {
     const slot = `${date}T${time}+08:00`;
     await db.prepare(`INSERT OR IGNORE INTO iperf_jobs
@@ -82,6 +95,22 @@ export async function enqueueDueIperfJobs(db, now = Date.now()) {
 
 function runnerAuthorized(request, env) {
   return !!env.IPERF_REPORT_TOKEN && request.headers.get('X-Iperf-Token') === env.IPERF_REPORT_TOKEN;
+}
+
+export async function handleIperfTargets(request, env) {
+  if (!runnerAuthorized(request, env)) return createUnauthorizedResponse();
+  let body;
+  try { body = await request.json(); } catch { return createBadRequestResponse('invalidJson'); }
+  const ids = body?.server_ids;
+  if (!Array.isArray(ids) || ids.length > 20 || ids.some(id => typeof id !== 'string' || !SERVER_ID.test(id))) {
+    return createBadRequestResponse('invalidTargetIds');
+  }
+  await ensureIperfJobTables(env.DB);
+  for (const id of ids) if (!await serverExists(env.DB, id)) return createBadRequestResponse('unknownServer');
+  await env.DB.prepare("DELETE FROM iperf_targets WHERE source='deb'").run();
+  for (const id of ids) await env.DB.prepare('INSERT INTO iperf_targets (server_id,source,last_seen) VALUES (?,?,?)')
+    .bind(id, 'deb', Date.now()).run();
+  return createSuccessResponse({ count: ids.length });
 }
 
 export async function handleIperfClaim(request, env) {

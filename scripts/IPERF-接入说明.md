@@ -32,7 +32,7 @@ export IPERF_REPORT_TOKEN='从安全位置读取的独立密钥'
 python3 iperf-report.py targets.json --output ./iperf-results
 ```
 
-每个目标依次执行 IPv4 下载、上传及 IPv6 下载、上传；`下载/上传` 均以 deb 为视角。默认每项 30 秒，单流，下载使用 `-R`。原始 JSON 与 stderr 留在 `--output/<run_id>/`，摘要写入同目录并上报。失败或超时不会写成 `0 Mbps`，重传次数也不表示物理丢包。
+每个目标依次执行 IPv4 下载、上传及 IPv6 下载、上传；`下载/上传` 均以 deb 为视角。默认每项 30 秒，单流，下载使用 `-R`，两项之间等待 2 秒。脚本请求服务端 JSON 输出以读取反向发送端的 TCP 重传。原始 JSON 与 stderr 留在 `--output/<run_id>/`，摘要写入同目录并上报。失败或超时不会写成 `0 Mbps`，重传次数也不表示物理丢包。
 
 ## 验收
 

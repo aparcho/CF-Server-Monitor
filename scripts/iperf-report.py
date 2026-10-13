@@ -7,12 +7,13 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 import urllib.request
 import uuid
 
 
 def probe(server, family, address, direction, duration, port, run_id, output):
-    cmd = ["iperf3", "-J", "-c", address, "-p", str(port), "-t", str(duration),
+    cmd = ["iperf3", "-J", "-i", "1", "--get-server-output", "-c", address, "-p", str(port), "-t", str(duration),
            "-4" if family == "ipv4" else "-6"]
     if direction == "download":
         cmd.append("-R")
@@ -65,6 +66,8 @@ def main():
             if not address:
                 continue
             for direction in ("download", "upload"):
+                if rows:
+                    time.sleep(2)
                 try:
                     row = probe(server, family, address, direction, args.duration,
                                 int(server.get("port", 5202)), run_id, output)

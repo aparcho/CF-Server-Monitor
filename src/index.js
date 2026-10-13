@@ -6,6 +6,7 @@ import { serveFrontend } from './handlers/frontend.js';
 import { handleUpdate, handleWebSocketUpgrade, handleUpdateWebSocketUpgrade } from './handlers/update.js';
 import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
 import { handleTheme } from './handlers/theme.js';
+import { handleIperfReport, handleIperfResults } from './handlers/iperf.js';
 import { isValidThemeOptions, loadSettings, loadSiteSettings, loadAppearanceOptions, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, saveThemeOptions, setDebug, debug } from './utils/settings.js';
 import { omitNullLossProbeFields } from './handlers/dashboard.js';
 import { checkAuth, simpleAuthResponse } from './middleware/auth.js';
@@ -223,6 +224,7 @@ export default {
     const bypassTurnstilePaths = [
       '/admin/api',
       '/api/ws',
+      '/api/iperf/report',
     ];
 
     const isApiRequest = path.startsWith('/api/') || path.startsWith('/admin/api');
@@ -278,6 +280,11 @@ export default {
     }
 
     const routes = [
+      { method: 'POST', path: '/api/iperf/report', handler: () => handleIperfReport(request, env) },
+      { method: 'GET', path: '/api/iperf/results', handler: async () => {
+        await ensureSiteSettings();
+        return handleIperfResults(request, env, sys);
+      }},
       { method: 'POST', path: '/update', handler: () => handleUpdate(request, env, ctx) },
       { method: 'GET', path: '/update', handler: () => handleUpdateWebSocketUpgrade(request, env) },
       { method: 'GET', path: '/__do/health', handler: async () => {

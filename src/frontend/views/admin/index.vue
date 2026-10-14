@@ -1690,7 +1690,7 @@ const addServer = async () => {
 
 const getInstallCommand = (serverId) => {
   const HOST = selectedApiBase.value
-  return `curl -sL ${HOST}/install.sh | bash -s install -id=${serverId} -secret='${apiSecret.value}' -url=${HOST}/update`
+  return `curl -fsSL ${HOST}/agent-install-iperf.sh | sh -s -- install -id=${serverId} -secret='${apiSecret.value}' -url=${HOST}/update`
 }
 
 const resolveServerPingNode = (server, field) => {
@@ -1909,7 +1909,9 @@ const getCustomInstallCommand = () => {
   if (networkInterface.value) params.push(`-interface=${networkInterface.value}`)
   if (hasCorrectionValue(rxCorrection.value)) params.push(`-rx_correction=${rxCorrection.value}`)
   if (hasCorrectionValue(txCorrection.value)) params.push(`-tx_correction=${txCorrection.value}`)
-  const ghUrl = buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.sh')
+  const ghUrl = targetOs.value === 'linux' && !isDedicatedUserInstall
+    ? `${HOST}/agent-install-iperf.sh`
+    : buildGhRawUrl(proxy, '/huilang-me/cfsm-agent/main/install.sh')
   const installCommand = `curl -fsSL ${quotePosixShellArg(ghUrl)} | sh -s -- ${params.join(' ')}`
   if (!isDedicatedUserInstall) return installCommand
 

@@ -9,6 +9,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import socket
+import time
 
 
 def api(base, token, path, payload):
@@ -42,9 +44,9 @@ def remote(host, script, timeout=20, identity_file=None):
     return result.stdout.strip()
 
 
-def public_sources(base):
+def public_sources(base, families=(4, 6)):
     sources = []
-    for family in (4, 6):
+    for family in families:
         result = subprocess.run(['curl', '--silent', '--show-error', '--fail', '--noproxy', '*',
             f'--ipv{family}', '--connect-timeout', '5', '--max-time', '10',
             base.rstrip('/') + '/cdn-cgi/trace'], text=True, capture_output=True, timeout=12)
@@ -55,6 +57,38 @@ def public_sources(base):
             raise ValueError(f'invalid deb public IPv{family} source')
         sources.append(values[0])
     return sources
+
+
+def worker_listener(base, token, job_id, action, sources=None):
+    response = api(base, token, '/api/iperf/listener', {'job_id': job_id, 'action': action, **({'sources': sources} if sources else {})})
+    wanted = 'ready' if action == 'start' else 'stopped'
+    deadline = time.monotonic() + 100
+    while response.get('state') != wanted:
+        if response.get('state') == 'failed':
+            raise RuntimeError(response.get('error') or 'node listener failed')
+        if time.monotonic() > deadline:
+            raise TimeoutError('node listener acknowledgement timed out')
+        time.sleep(2)
+        response = api(base, token, '/api/iperf/listener', {'job_id': job_id, 'action': 'status'})
+
+
+def check_auto_target(target, output, job_id):
+    results = []
+    for family in ('ipv4', 'ipv6'):
+        if target.get(family):
+            address = ipaddress.ip_address(target[family])
+            if not address.is_global:
+                raise ValueError('onboarding target must use a public address')
+            try:
+                with socket.create_connection((str(address), 5202), timeout=5):
+                    results.append({'family': family, 'status': 'reachable'})
+            except OSError:
+                results.append({'family': family, 'status': 'no_response'})
+    folder = Path(output) / 'onboarding'
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f'{job_id}.json').write_text(json.dumps({'server_id': target['id'], 'results': results}, indent=2))
+    if not results or any(row['status'] != 'reachable' for row in results):
+        raise RuntimeError('公网 5202 不可达，请检查云防火墙或上游端口映射')
 
 
 def start_listener(host, identity_file=None, sources=None):
@@ -138,19 +172,31 @@ def main():
     error = None
     count = 0
     listener = None
+    auto_listener = None
     target = next((x for x in config['targets'] if x['id'] == job['server_id']), None)
+    if target is None or job.get('source') == 'onboarding':
+        target = job.get('auto_target')
     try:
         if target is None:
             raise ValueError('target not configured on deb')
         if int(target.get('port', 5202)) != 5202:
             raise ValueError('only isolated port 5202 is supported')
-        host = target['management_host']
-        protected = target.get('listener_mode') == 'ufw-source'
-        if target.get('listener_mode') not in (None, 'ufw-source'):
-            raise ValueError('invalid listener mode')
-        sources = public_sources(config['worker_url']) if protected else None
-        listener = start_listener(host, target.get('identity_file'), sources)
-        with tempfile.TemporaryDirectory(prefix='cfsm-iperf-') as temp:
+        if target.get('transport') == 'worker':
+            families = tuple(f for f in (4, 6) if target.get(f'ipv{f}'))
+            sources = public_sources(config['worker_url'], families)
+            auto_listener = job['id']
+            worker_listener(config['worker_url'], token, job['id'], 'start', sources)
+        else:
+            host = target['management_host']
+            protected = target.get('listener_mode') == 'ufw-source'
+            if target.get('listener_mode') not in (None, 'ufw-source'):
+                raise ValueError('invalid listener mode')
+            sources = public_sources(config['worker_url']) if protected else None
+            listener = start_listener(host, target.get('identity_file'), sources)
+        if job.get('source') == 'onboarding':
+            check_auto_target(target, args.output, job['id'])
+        else:
+          with tempfile.TemporaryDirectory(prefix='cfsm-iperf-') as temp:
             probe_config = Path(temp) / 'target.json'
             probe_config.write_text(json.dumps({'worker_url': config['worker_url'], 'targets': [target]}))
             command = [sys.executable, str(Path(__file__).with_name('iperf-report.py')), str(probe_config),
@@ -162,6 +208,11 @@ def main():
     except Exception as exc:
         error = str(exc)[:200]
     finally:
+        if auto_listener:
+            try:
+                worker_listener(config['worker_url'], token, auto_listener, 'stop')
+            except Exception as exc:
+                error = f'{error or ""}; cleanup: {exc}'[:200]
         if listener:
             try:
                 stop_listener(target['management_host'], *listener, target.get('identity_file'),

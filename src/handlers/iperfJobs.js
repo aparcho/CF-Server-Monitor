@@ -1,4 +1,5 @@
 import { createBadRequestResponse, createSuccessResponse, createUnauthorizedResponse } from '../utils/errors.js';
+import { finishIperfAutoCheck, getIperfAutoTarget, listIperfEnrollments, retryIperfEnrollment } from './iperfAuto.js';
 
 const SERVER_ID = /^[a-zA-Z0-9._:-]{1,100}$/;
 const BEIJING_OFFSET = 8 * 3600_000;
@@ -51,16 +52,18 @@ export async function handleIperfAdminAction(data, env) {
   await ensureIperfJobTables(env.DB);
   const { action } = data;
   if (action === 'iperf_list') {
-    const [jobs, schedules, targets] = await Promise.all([
+    const [jobs, schedules, targets, enrollments] = await Promise.all([
       env.DB.prepare('SELECT * FROM iperf_jobs ORDER BY created_at DESC LIMIT 100').all(),
       env.DB.prepare('SELECT * FROM iperf_schedules ORDER BY server_id').all(),
-      env.DB.prepare('SELECT server_id FROM iperf_targets WHERE last_seen>?').bind(Date.now() - 5 * 60_000).all()
+      env.DB.prepare('SELECT server_id FROM iperf_targets WHERE last_seen>?').bind(Date.now() - 5 * 60_000).all(),
+      listIperfEnrollments(env.DB)
     ]);
-    return createSuccessResponse({ jobs: jobs.results || [], schedules: schedules.results || [],
+    return createSuccessResponse({ jobs: jobs.results || [], schedules: schedules.results || [], enrollments,
       ready_targets: (targets.results || []).map(row => row.server_id) });
   }
   const id = data.server_id;
   if (typeof id !== 'string' || !SERVER_ID.test(id) || !await serverExists(env.DB, id)) return createBadRequestResponse('unknownServer');
+  if (action === 'iperf_onboard_retry') return retryIperfEnrollment(env.DB, id);
   const duration = validDuration(data.duration_seconds);
   if (!duration) return createBadRequestResponse('invalidDuration');
   if (action === 'iperf_trigger') {
@@ -138,7 +141,8 @@ export async function handleIperfClaim(request, env) {
   const claimed = await env.DB.prepare("UPDATE iperf_jobs SET status='running',started_at=? WHERE id=? AND status='queued'")
     .bind(now, candidate.id).run();
   if (!claimed.meta?.changes) return createSuccessResponse(null);
-  const job = await env.DB.prepare('SELECT id,server_id,duration_seconds FROM iperf_jobs WHERE id=?').bind(candidate.id).first();
+  const job = await env.DB.prepare('SELECT id,server_id,duration_seconds,source FROM iperf_jobs WHERE id=?').bind(candidate.id).first();
+  job.auto_target = await getIperfAutoTarget(env.DB, job.server_id);
   return createSuccessResponse(job);
 }
 
@@ -150,9 +154,11 @@ export async function handleIperfFinish(request, env) {
       !['completed', 'failed'].includes(body.status) ||
       !Number.isInteger(body.result_count) || body.result_count < 0 || body.result_count > 4) return createBadRequestResponse('invalidIperfCompletion');
   await ensureIperfJobTables(env.DB);
+  const job = await env.DB.prepare('SELECT id,server_id,source,scheduled_slot FROM iperf_jobs WHERE id=?').bind(body.id).first();
   const result = await env.DB.prepare("UPDATE iperf_jobs SET status=?,finished_at=?,error=?,result_count=? WHERE id=? AND status='running'")
     .bind(body.status, Date.now(), typeof body.error === 'string' ? body.error.slice(0, 200) : null,
       body.result_count, body.id).run();
   if (!result.meta?.changes) return createBadRequestResponse('iperfJobNotRunning');
+  await finishIperfAutoCheck(env.DB, job, body.status, typeof body.error === 'string' ? body.error.slice(0, 200) : null);
   return createSuccessResponse({ success: true });
 }

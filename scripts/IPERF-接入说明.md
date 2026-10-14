@@ -41,7 +41,7 @@ python3 iperf-report.py targets.json --output ./iperf-results
 
 - 上报成功返回 `{ "success": true, "count": ... }`；重复上报相同 `run_id` 只更新同一行。
 - SAO 节点详情出现 `iperf3 测速` 区域，按 IPv4/IPv6 和 deb 下载/上传显示最近结果、时间及测试条件。
-- 使用相同源、出口、地址族、端口、方向和时长比较历史结果。SAO 节点详情显示最近结果，后台提供定时调度；历史曲线尚未加入。
+- 使用相同源、出口、地址族、端口、方向和时长比较历史结果。SAO 节点详情的“测速”页提供最近 5/10/20 次测试的双栈双向时间折线图，悬浮或触摸可查看测试时间、吞吐和 TCP 重传。下方完整历史按每页 5 次测试分页；`/api/iperf/results?view=history&id=...&page=1&page_size=5` 按完整批次分页，返回 `rows`、`page`、`page_size` 和 `total_runs`，不会拆分同一次测试的四个方向。默认不带 `view=history` 的接口仍返回最近 80 条方向结果。
 - 测速端口的结果只证明该端口与这条路径，不能直接认定 Reality 或其他代理服务的质量。
 
 ## 手动触发与定时测速

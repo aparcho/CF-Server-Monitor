@@ -56,6 +56,7 @@ export async function handleIperfBootstrap(request, env) {
   await env.DB.prepare(`INSERT INTO iperf_enrollments (server_id,enrollment_id,status,last_seen) VALUES (?,?,'pending',?)
     ON CONFLICT(server_id) DO UPDATE SET enrollment_id=excluded.enrollment_id,status='pending',checked_key=NULL,error=NULL,last_seen=excluded.last_seen`)
     .bind(row.server_id, row.enrollment_id, Date.now()).run();
+  await env.DB.prepare("DELETE FROM iperf_targets WHERE server_id=? AND source='auto'").bind(row.server_id).run();
   await env.DB.prepare(`INSERT OR IGNORE INTO iperf_schedules (server_id,enabled,time_beijing,time_beijing_day,duration_seconds,updated_at)
     VALUES (?,0,'21:30','11:30',10,?)`).bind(row.server_id, Date.now()).run();
   return ok({ token: await nodeToken(row, env), server_id: row.server_id });

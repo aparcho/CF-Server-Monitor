@@ -46,7 +46,7 @@ python3 iperf-report.py targets.json --output ./iperf-results
 
 ## 手动触发与定时测速
 
-CFSM 后台新增“测速”页，可逐台选择 10 秒或 30 秒单项时长，点击“开始测速”，并配置每日北京时间。所有定时配置默认关闭，需逐台保存启用。Worker 每分钟只把到点的任务写入 D1，实际测试仍由 `deb` 执行。后台展示等待、执行、完成、失败及最近任务。
+CFSM 后台新增“测速”页，可逐台选择 10 秒或 30 秒单项时长，点击“开始测速”，并配置每日两次北京时间：日间默认 `11:30`，晚高峰可逐台设置。一个启用开关控制两个时段；新配置默认关闭，需逐台保存启用。升级旧单时段配置时，保留已有晚高峰时间与启用状态，新增日间 `11:30`；原先启用的节点将每天执行两次，原先关闭的节点继续关闭。Worker 每分钟只把到点的任务写入 D1，按节点与日期时间去重，实际测试仍由 `deb` 执行。后台展示等待、执行、完成、失败及最近任务。
 
 `deb` 使用 `iperf-runner.py` 每分钟领取一个任务。只执行本机 JSON 白名单中的目标，目标需增加 `management_host`，例如 `root@lax`。执行器通过该管理连接在目标机临时启动 `5202` 监听，验证端口原本空闲及既有 `5201` 状态，然后调用 `iperf-report.py` 执行双栈、双向测试并上报；结束时按记录的 PID 清理监听，检查 `5201` 未变化。监听本身由 `timeout 600s` 兜底退出。目标机的 SSH 主机密钥应先核对并写入 deb 的 `known_hosts`，同时确认 `5202` 公网访问策略；未完成这些准备的节点不要加入白名单。
 
@@ -54,6 +54,6 @@ CFSM 后台新增“测速”页，可逐台选择 10 秒或 30 秒单项时长�
 
 `AWS.TYO` 原有 UFW 规则拒绝公网 `5202`。该目标设置 `listener_mode: "ufw-source"`，并在目标机安装 `cfsm-iperf-ufw-listener.sh`。每次任务先通过本监控域名的 `/cdn-cgi/trace` 确认 deb 当前 IPv4/IPv6 公网源地址，再用 transient systemd service 在既有拒绝规则之前仅放行这两个源地址。服务退出时按专用注释和规则编号删除新增规则，停止 `5202` 监听；运行器核实端口与规则均已清理、`5201` 未改变。此模式依赖监控域名可访问 Cloudflare trace，取不到双栈源地址就拒绝运行。
 
-执行器每分钟把本机白名单同步到 Worker。最近五分钟未同步的节点在后台显示“未接入 deb”，不能手动触发或启用定时任务；已有定时任务在目标不可用时不会排队。截至 2026-10-14，`DMIT.LAX`、`Legend.SG`、`OCI.TYO`、`AWS.HKG`、`AWS.TYO` 已加入 deb 白名单，手动完成双栈双向验收，定时开关均保持关闭。按当前接入决定，`HK-MO` 暂不接入：它是无主机防火墙管理权限的容器，公网 `5202` 到容器的映射尚未打通；该节点不加入白名单，也不开启定时任务。
+执行器每分钟把本机白名单同步到 Worker。最近五分钟未同步的节点在后台显示“未接入 deb”，不能手动触发或启用定时任务；已有定时任务在目标不可用时不会排队。截至 2026-10-14，`DMIT.LAX`、`Legend.SG`、`OCI.TYO`、`AWS.HKG`、`AWS.TYO` 已加入 deb 白名单，手动完成双栈双向验收。接入验收时定时开关全部关闭，后续启用状态与每日两个测试时间以后台已保存配置为准。按当前接入决定，`HK-MO` 暂不接入：它是无主机防火墙管理权限的容器，公网 `5202` 到容器的映射尚未打通；该节点不加入白名单，也不开启定时任务。
 
 可使用 `scripts/systemd/cfsm-iperf-runner.service` 和 `.timer` 在 deb 安装轮询。密钥仍仅保存在 `/root/.config/cfsm/iperf-token`，不写入 unit、仓库或浏览器。`iperf_jobs` 与 `iperf_schedules` 表由 Worker 自动创建。回滚时先停止 timer、等待正在运行的 service 完成，再恢复 deb 上的 `/root/iperf-runner-before-all-20261014.py` 与 `/root/cfsm-iperf-targets-before-all-20261014.json`；如需回滚 Worker，再部署备份 Worker。D1 历史任务和测速结果可保留，不影响旧版本运行。TYO 的专用脚本位于 `/usr/local/sbin/cfsm-iperf-ufw-listener`，回滚后确认 transient service 已停止且无 `CFSM deb temporary` 规则，再按需移除该脚本。

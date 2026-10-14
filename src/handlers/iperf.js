@@ -65,6 +65,22 @@ export async function handleIperfResults(request, env, sys) {
   const serverId = url.searchParams.get('id');
   if (!serverId || !/^[a-zA-Z0-9._:-]{1,100}$/.test(serverId)) return createBadRequestResponse('invalidServerId');
   await ensureTable(env.DB);
+  if (url.searchParams.get('view') === 'history') {
+    const requestedPage = Number(url.searchParams.get('page') || 1);
+    const pageSize = Number(url.searchParams.get('page_size') || 5);
+    if (!Number.isSafeInteger(requestedPage) || requestedPage < 1 || ![5, 10, 20].includes(pageSize)) {
+      return createBadRequestResponse('invalidPagination');
+    }
+    const total = await env.DB.prepare('SELECT COUNT(DISTINCT run_id) AS total FROM iperf_results WHERE server_id = ?').bind(serverId).first();
+    const totalRuns = Number(total?.total || 0);
+    const page = Math.min(requestedPage, Math.max(1, Math.ceil(totalRuns / pageSize)));
+    // 按完整测试批次分页，避免把同一次测试的四个方向拆到两页。
+    const rows = await env.DB.prepare(`SELECT * FROM iperf_results WHERE server_id = ? AND run_id IN (
+      SELECT run_id FROM iperf_results WHERE server_id = ? GROUP BY run_id
+      ORDER BY MAX(tested_at) DESC, run_id DESC LIMIT ? OFFSET ?
+    ) ORDER BY tested_at DESC, run_id DESC`).bind(serverId, serverId, pageSize, (page - 1) * pageSize).all();
+    return createSuccessResponse({ rows: rows.results || [], page, page_size: pageSize, total_runs: totalRuns });
+  }
   const rows = await env.DB.prepare('SELECT * FROM iperf_results WHERE server_id = ? ORDER BY tested_at DESC LIMIT 80').bind(serverId).all();
   return createSuccessResponse(rows.results || []);
 }

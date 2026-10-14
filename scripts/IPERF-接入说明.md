@@ -1,6 +1,16 @@
 # iperf3 测速接入
 
-此功能从 `deb` 发起公网 IPv4/IPv6 TCP 单流测试。Worker 只接收摘要并展示，既有 Agent 不执行命令。测速会产生实际流量，建议先手动运行，再决定是否定时。
+此功能从 `deb` 发起公网 IPv4/IPv6 TCP 单流测试。Worker 调度任务、接收摘要并展示；既有 Agent 不执行命令，新节点另用固定功能的测速助手控制临时监听。测速会产生实际流量，建议先手动运行，再决定是否定时。
+
+## 新节点自动接入
+
+后台的新 Linux root 安装命令通过本站的 `agent-install-iperf.sh` 安装官方探针，并准备 `python3`、`iperf3`、`iptables` 和独立 `cfsm-iperf-node.service`。助手使用按节点签发的独立凭证与 Worker 协调，deb 自动领取接入检查任务，通过公网 TCP 5202 验证节点实际可达；检查不执行吞吐测试。成功后后台显示“已自动接入”，不再需要为新节点配置 deb SSH 或手动白名单。
+
+每个新节点自动生成 `11:30` 和 `21:30` 两个北京时间预设，启用开关为关闭。重新安装不会覆盖已经保存的定时状态。非 root、无 systemd、Docker、Windows 和其他平台的安装方式仍安装监控探针，不自动配置本 Linux 助手。HK-MO 按原决定不接入。
+
+助手只接受启动或停止固定 5202 监听的指令。监听期间仅放行 deb 的公网源地址，同时阻止其他来源，结束时停止本次进程并删除本次注释标记的规则；保留原有 5201 服务。监听由 transient systemd service 的 600 秒上限兜底。云安全组、上游端口映射不能由助手修改；不可达时后台显示原因并提供“重新检查”。
+
+原有五台手工接入节点继续使用既有配置，deb 的私有管理信息与报告密钥不分发给节点。助手凭证保存在节点 `/etc/cfsm-iperf/node.json`（0600），服务文件与助手分别位于 `/etc/systemd/system/cfsm-iperf-node.service` 和 `/usr/local/sbin/cfsm-iperf-node`。回滚助手时先停止服务、等待当前 transient listener 清理完毕，再恢复 Worker 与 deb runner 备份；保留必要配置与备份。
 
 ## 基线与回滚
 

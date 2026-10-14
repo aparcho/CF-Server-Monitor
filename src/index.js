@@ -8,6 +8,7 @@ import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
 import { handleTheme } from './handlers/theme.js';
 import { handleIperfReport, handleIperfResults } from './handlers/iperf.js';
 import { handleIperfClaim, handleIperfFinish, handleIperfTargets, enqueueDueIperfJobs } from './handlers/iperfJobs.js';
+import { handleIperfBootstrap, handleIperfNode, handleIperfListener } from './handlers/iperfAuto.js';
 import { isValidThemeOptions, loadSettings, loadSiteSettings, loadAppearanceOptions, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, saveThemeOptions, setDebug, debug } from './utils/settings.js';
 import { omitNullLossProbeFields } from './handlers/dashboard.js';
 import { checkAuth, simpleAuthResponse } from './middleware/auth.js';
@@ -284,6 +285,9 @@ export default {
     }
 
     const routes = [
+      { method: 'POST', path: '/api/iperf/bootstrap', handler: () => handleIperfBootstrap(request, env) },
+      { method: 'POST', path: '/api/iperf/node', handler: () => handleIperfNode(request, env) },
+      { method: 'POST', path: '/api/iperf/listener', handler: () => handleIperfListener(request, env) },
       { method: 'POST', path: '/api/iperf/report', handler: () => handleIperfReport(request, env) },
       { method: 'POST', path: '/api/iperf/jobs/claim', handler: () => handleIperfClaim(request, env) },
       { method: 'POST', path: '/api/iperf/jobs/finish', handler: () => handleIperfFinish(request, env) },

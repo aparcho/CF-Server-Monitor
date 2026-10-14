@@ -2,6 +2,7 @@
   <div v-if="activeTab === 'iperf'" class="tab-content active iperf-panel">
     <h3>iperf3 测速</h3>
     <p>测试由 deb 发起，使用目标节点的临时 5202 监听。每天可设置日间与晚高峰两次测试，时间均为北京时间；启用后两个时段同时生效。</p>
+    <p>新 Linux 节点使用后台安装命令并以 root 安装时会自动接入测速。接入检查通过后可手动测速，定时默认关闭。</p>
     <button class="btn" :disabled="loading" @click="load">↻ 刷新任务</button>
     <p v-if="message" :class="{ 'iperf-error': error }">{{ message }}</p>
     <div class="iperf-table-wrap">
@@ -9,7 +10,13 @@
         <thead><tr><th>节点</th><th>测试时长</th><th>手动触发</th><th>每天定时</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="server in servers" :key="server.id">
-            <td>{{ server.name || server.id }}</td>
+            <td>{{ server.name || server.id }}
+              <div v-if="enrollment(server.id)" class="iperf-enrollment">
+                {{ enrollmentName(server.id) }}
+                <span v-if="enrollment(server.id).error">：{{ enrollment(server.id).error }}</span>
+                <button v-if="enrollment(server.id).status === 'blocked'" class="btn" :disabled="loading || pending(server.id)" @click="retry(server.id)">重新检查</button>
+              </div>
+            </td>
             <td><select v-model.number="form(server.id).duration_seconds"><option :value="10">10 秒</option><option :value="30">30 秒</option></select></td>
             <td><button class="btn" :disabled="loading || pending(server.id) || !ready(server.id)" @click="trigger(server.id)">{{ !ready(server.id) ? '未接入 deb' : pending(server.id) ? '任务进行中' : '开始测速' }}</button></td>
             <td><div class="iperf-schedule">
@@ -24,7 +31,7 @@
     </div>
     <h4>最近任务</h4>
     <div class="iperf-table-wrap"><table class="iperf-table"><thead><tr><th>节点</th><th>来源</th><th>状态</th><th>创建时间</th><th>结果</th></tr></thead>
-      <tbody><tr v-for="job in jobs" :key="job.id"><td>{{ serverName(job.server_id) }}</td><td>{{ job.source === 'scheduled' ? '定时' : '手动' }}</td><td>{{ statusName(job.status) }}</td><td>{{ formatTime(job.created_at) }}</td><td>{{ job.status === 'failed' ? (job.error || '失败') : (job.result_count ?? '—') }}</td></tr></tbody>
+      <tbody><tr v-for="job in jobs" :key="job.id"><td>{{ serverName(job.server_id) }}</td><td>{{ job.source === 'onboarding' ? '自动接入检查' : job.source === 'scheduled' ? '定时' : '手动' }}</td><td>{{ statusName(job.status) }}</td><td>{{ formatTime(job.created_at) }}</td><td>{{ job.status === 'failed' ? (job.error || '失败') : job.source === 'onboarding' && job.status === 'completed' ? '公网检查通过' : (job.result_count ?? '—') }}</td></tr></tbody>
     </table></div>
   </div>
 </template>
@@ -36,6 +43,13 @@ import { adminApi } from '../../../utils/api'
 const props = defineProps({ activeTab: String, servers: { type: Array, default: () => [] }, selectedApiIndex: Number })
 const jobs = ref([])
 const readyTargets = ref([])
+const enrollments = ref([])
+const enrollment = (id) => enrollments.value.find(row => row.server_id === id)
+const enrollmentName = (id) => {
+  const row = enrollment(id)
+  if (Date.now() - row.last_seen > 5 * 60_000) return '测速助手离线'
+  return { pending: '自动接入检查中', ready: '已自动接入', blocked: '自动接入待处理' }[row.status]
+}
 const forms = reactive({})
 const loading = ref(false)
 const message = ref('')
@@ -65,11 +79,15 @@ async function load() {
   if (!data) return
   jobs.value = data.jobs || []
   readyTargets.value = data.ready_targets || []
+  enrollments.value = data.enrollments || []
   for (const schedule of data.schedules || []) Object.assign(form(schedule.server_id), { enabled: !!schedule.enabled, time_beijing: schedule.time_beijing, time_beijing_day: schedule.time_beijing_day || '11:30', duration_seconds: schedule.duration_seconds })
 }
 async function trigger(id) {
   const data = await call({ action: 'iperf_trigger', server_id: id, duration_seconds: form(id).duration_seconds })
   if (data) { message.value = '任务已排队，deb 将在下一次轮询时执行。'; await load() }
+}
+async function retry(id) {
+  if (await call({ action: 'iperf_onboard_retry', server_id: id })) await load()
 }
 async function save(id) {
   if (!form(id).time_beijing_day || !form(id).time_beijing || form(id).time_beijing_day === form(id).time_beijing) {
@@ -87,6 +105,7 @@ watch(() => [props.activeTab, props.selectedApiIndex], ([tab]) => { if (tab === 
 .iperf-panel { padding: 20px; }
 .iperf-panel p { margin: 12px 0; }
 .iperf-error { color: #e55; }
+.iperf-enrollment { max-width: 260px; margin-top: 6px; font-size: 12px; opacity: .8; }
 .iperf-table-wrap { overflow-x: auto; margin: 16px 0; }
 .iperf-table { width: 100%; border-collapse: collapse; min-width: 620px; }
 .iperf-table th, .iperf-table td { padding: 10px; border-bottom: 1px solid #7774; text-align: left; }

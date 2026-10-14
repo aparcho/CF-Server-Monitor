@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=oneshot
 User=root
 ExecStart=/usr/bin/python3 /root/iperf-runner.py /root/cfsm-iperf-targets-lax.json --output /root/cfsm-iperf-results
-TimeoutStartSec=5min
+TimeoutStartSec=9min
 NoNewPrivileges=true
 PrivateTmp=true
 

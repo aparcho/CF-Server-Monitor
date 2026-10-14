@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { buildHistoryId } from '../src/database/indexOptimization.js';
 import { handleIperfBootstrap, handleIperfNode, handleIperfListener } from '../src/handlers/iperfAuto.js';
 import { handleIperfClaim, handleIperfFinish, handleIperfAdminAction, handleIperfTargets } from '../src/handlers/iperfJobs.js';
 const { DatabaseSync } = await import('node:sqlite').catch(() => ({}));
 
 function setup() {
   const sqlite = new DatabaseSync(':memory:');
-  sqlite.exec("CREATE TABLE servers (id TEXT PRIMARY KEY,ipv4 TEXT,ipv6 TEXT); INSERT INTO servers VALUES ('new','8.8.8.8','2001:4860:4860::8888'),('other','1.1.1.1',NULL)");
+  sqlite.exec("CREATE TABLE servers (id TEXT PRIMARY KEY,history_partition_id INTEGER,timestamp INTEGER); INSERT INTO servers VALUES ('new',1,0),('other',2,0); CREATE TABLE metrics_history (id INTEGER PRIMARY KEY,ip_v4 TEXT,ip_v6 TEXT)");
+  sqlite.prepare('INSERT INTO metrics_history VALUES (?,?,?)').run(buildHistoryId(1,Date.now()),'8.8.8.8','2001:4860:4860::8888');
+  sqlite.prepare('INSERT INTO metrics_history VALUES (?,?,?)').run(buildHistoryId(2,Date.now()),'1.1.1.1',null);
   const DB = { prepare(sql) { let args = []; return {
     bind(...values) { args = values; return this; },
     async first() { return sqlite.prepare(sql).get(...args) ?? null; },

@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { getLatestMetrics } from '../database/schema.js';
 import { ensureIperfJobTables } from './iperfJobs.js';
 import { createBadRequestResponse as bad, createSuccessResponse as ok, createUnauthorizedResponse as denied } from '../utils/errors.js';
 
@@ -69,13 +70,14 @@ export async function handleIperfNode(request, env) {
   await ensureAutoTables(env.DB);
   const row = await env.DB.prepare('SELECT * FROM iperf_enrollments WHERE server_id=?').bind(data.id).first();
   if (!await nodeAuth(request, row, env)) return denied();
-  const server = await env.DB.prepare('SELECT ipv4,ipv6 FROM servers WHERE id=?').bind(data.id).first();
+  const server = await env.DB.prepare('SELECT * FROM servers WHERE id=?').bind(data.id).first();
   if (!server) return bad('unknownServer');
+  const metrics = await getLatestMetrics(env.DB, data.id, server);
   let ipv4, ipv6;
   try { ipv4 = publicAddress(data.ipv4, 4); ipv6 = publicAddress(data.ipv6, 6); } catch { return bad('invalidPublicAddress'); }
   const now = Date.now();
   let error = typeof data.error === 'string' ? data.error.slice(0, 200) : null;
-  if (!error && ((!ipv4 && !ipv6) || (ipv4 && ipv4 !== server.ipv4) || (ipv6 && ipv6 !== server.ipv6))) error = '等待探针上报匹配的公网地址';
+  if (!error && ((!ipv4 && !ipv6) || (ipv4 && ipv4 !== metrics?.ip_v4) || (ipv6 && ipv6 !== metrics?.ip_v6))) error = '等待探针上报匹配的公网地址';
   const current = { ...row, ipv4, ipv6 };
   const checked = row.checked_key === targetKey(current);
   const status = error ? error === '等待探针上报匹配的公网地址' ? 'pending' : 'blocked' : checked ? 'ready' : row.status === 'blocked' && row.ipv4 === ipv4 && row.ipv6 === ipv6 ? 'blocked' : 'pending';

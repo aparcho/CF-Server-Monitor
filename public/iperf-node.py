@@ -58,6 +58,18 @@ def source_rules(sources, job):
 def run(command, **kwargs):
     return subprocess.run(command, check=True, text=True, capture_output=True, timeout=25, **kwargs)
 
+def stop_unit(job):
+    name = unit(job)
+    try:
+        run(['systemctl', 'stop', name])
+    except subprocess.CalledProcessError:
+        # systemd --collect 会移除已经结束的临时服务。重复停止应视为完成，
+        # 但不能吞掉仍然存在的服务或实际停止错误。
+        state = run(['systemctl', 'show', name + '.service', '--property=LoadState', '--property=ActiveState']).stdout
+        fields = dict(line.split('=', 1) for line in state.splitlines() if '=' in line)
+        if fields.get('LoadState') != 'not-found' or fields.get('ActiveState') != 'inactive':
+            raise
+
 def listen(path):
     session = json.loads(Path(path).read_text())
     rules = source_rules(session['sources'], session['job_id'])
@@ -129,7 +141,7 @@ def serve():
                 unit_name = unit(job)
                 path = STATE / (job + '.json')
                 if current and current != job:
-                    run(['systemctl', 'stop', unit(current)])
+                    stop_unit(current)
                 current = job
                 if not path.exists():
                     write_json(path, {**command, 'state': 'starting'})
@@ -141,17 +153,18 @@ def serve():
                         write_json(path, {**command, 'state': 'failed', 'error': str(exc)[:150]})
             elif command['command'] == 'stop':
                 current = job
-                run(['systemctl', 'stop', unit(job)])
+                stop_unit(job)
                 path = STATE / (job + '.json')
                 if not path.exists(): write_json(path, {**command, 'state': 'stopped'})
             elif command['command'] == 'wait':
                 current = job
             elif command['command'] == 'idle' and current:
                 path = STATE / (current + '.json')
-                if path.exists() and json.loads(path.read_text()).get('state') in ('stopped', 'failed'):
-                    path.unlink(); current = None
+                if not path.exists() or json.loads(path.read_text()).get('state') in ('stopped', 'failed'):
+                    if path.exists(): path.unlink()
+                    current = None
         except Exception as exc:
-            print('CFSM iperf node: ' + type(exc).__name__, flush=True)
+            print('CFSM iperf node: ' + type(exc).__name__ + ': ' + str(exc)[:200], flush=True)
         time.sleep(2 if current else 60)
 
 def install(args):

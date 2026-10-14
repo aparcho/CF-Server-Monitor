@@ -15,6 +15,18 @@ node = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(node)
 
 class ListenerTests(unittest.TestCase):
+    def test_stop_of_collected_service_is_idempotent(self):
+        job = '12345678-1234-1234-1234-123456789abc'
+        missing = subprocess.CalledProcessError(5, ['systemctl', 'stop'])
+        with patch.object(node, 'run', side_effect=[missing, types.SimpleNamespace(stdout='LoadState=not-found\nActiveState=inactive\n')]):
+            node.stop_unit(job)
+
+    def test_real_stop_failure_is_not_hidden(self):
+        job = '12345678-1234-1234-1234-123456789abc'
+        failure = subprocess.CalledProcessError(1, ['systemctl', 'stop'])
+        with patch.object(node, 'run', side_effect=[failure, types.SimpleNamespace(stdout='LoadState=loaded\nActiveState=active\n')]):
+            with self.assertRaises(subprocess.CalledProcessError): node.stop_unit(job)
+
     def test_sources_are_public_and_restricted(self):
         with patch.object(node.shutil, 'which', return_value='/sbin/iptables'):
             rules = node.source_rules(['8.8.8.8', '2001:4860:4860::8888'], 'job')

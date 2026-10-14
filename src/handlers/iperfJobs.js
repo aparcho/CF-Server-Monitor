@@ -21,12 +21,10 @@ export async function ensureIperfJobTables(db) {
     updated_at INTEGER NOT NULL
   )`).run();
   const columns = await db.prepare('PRAGMA table_info(iperf_schedules)').all();
-  if (!(columns.results || []).some(column => column.name === 'time_beijing_day')) {
-    try {
-      await db.prepare("ALTER TABLE iperf_schedules ADD COLUMN time_beijing_day TEXT NOT NULL DEFAULT '11:30'").run();
-    } catch (error) {
-      // 并发请求可能已完成同一列的升级，其余迁移错误继续向上传递。
-      if (!/duplicate column name/i.test(error.message || '')) throw error;
+  for (const [name, definition] of [['time_beijing_day', "TEXT NOT NULL DEFAULT '11:30'"], ['time_beijing_extra', 'TEXT DEFAULT NULL']]) {
+    if (!(columns.results || []).some(column => column.name === name)) {
+      try { await db.prepare(`ALTER TABLE iperf_schedules ADD COLUMN ${name} ${definition}`).run(); }
+      catch (error) { if (!/duplicate column name/i.test(error.message || '')) throw error; }
     }
   }
   await db.prepare(`CREATE TABLE IF NOT EXISTS iperf_targets (
@@ -78,17 +76,18 @@ export async function handleIperfAdminAction(data, env) {
   if (action === 'iperf_schedule') {
     const enabled = data.enabled === true ? 1 : data.enabled === false ? 0 : null;
     const time = data.time_beijing;
-    const existing = await env.DB.prepare('SELECT time_beijing_day FROM iperf_schedules WHERE server_id=?').bind(id).first();
+    const existing = await env.DB.prepare('SELECT time_beijing_day,time_beijing_extra FROM iperf_schedules WHERE server_id=?').bind(id).first();
     const dayTime = data.time_beijing_day ?? existing?.time_beijing_day ?? '11:30';
+    const extraTime = data.time_beijing_extra === undefined ? existing?.time_beijing_extra ?? null : data.time_beijing_extra === '' ? null : data.time_beijing_extra;
     const validTime = value => typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
-    if (enabled === null || !validTime(time) || !validTime(dayTime) || time === dayTime) return createBadRequestResponse('invalidIperfSchedule');
+    if (enabled === null || !validTime(time) || !validTime(dayTime) || time === dayTime || (extraTime !== null && (!validTime(extraTime) || [time, dayTime].includes(extraTime)))) return createBadRequestResponse('invalidIperfSchedule');
     if (enabled && !await targetReady(env.DB, id)) return createBadRequestResponse('targetNotReadyOnDeb');
-    await env.DB.prepare(`INSERT INTO iperf_schedules (server_id,enabled,time_beijing,time_beijing_day,duration_seconds,updated_at)
-      VALUES (?,?,?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET enabled=excluded.enabled,
-      time_beijing=excluded.time_beijing,time_beijing_day=excluded.time_beijing_day,
+    await env.DB.prepare(`INSERT INTO iperf_schedules (server_id,enabled,time_beijing,time_beijing_day,time_beijing_extra,duration_seconds,updated_at)
+      VALUES (?,?,?,?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET enabled=excluded.enabled,
+      time_beijing=excluded.time_beijing,time_beijing_day=excluded.time_beijing_day,time_beijing_extra=excluded.time_beijing_extra,
       duration_seconds=excluded.duration_seconds,updated_at=excluded.updated_at`)
-      .bind(id, enabled, time, dayTime, duration, Date.now()).run();
-    return createSuccessResponse({ server_id: id, enabled, time_beijing: time, time_beijing_day: dayTime, duration_seconds: duration });
+      .bind(id, enabled, time, dayTime, extraTime, duration, Date.now()).run();
+    return createSuccessResponse({ server_id: id, enabled, time_beijing: time, time_beijing_day: dayTime, time_beijing_extra: extraTime, duration_seconds: duration });
   }
   return createBadRequestResponse('unknownIperfAction');
 }
@@ -100,7 +99,7 @@ export async function enqueueDueIperfJobs(db, now = Date.now()) {
   const time = local.toISOString().slice(11, 16);
   const schedules = await db.prepare(`SELECT s.* FROM iperf_schedules s JOIN servers v ON v.id=s.server_id
     JOIN iperf_targets t ON t.server_id=s.server_id
-    WHERE s.enabled=1 AND (s.time_beijing=? OR s.time_beijing_day=?) AND t.last_seen>?`).bind(time, time, now - 5 * 60_000).all();
+    WHERE s.enabled=1 AND (s.time_beijing=? OR s.time_beijing_day=? OR s.time_beijing_extra=?) AND t.last_seen>?`).bind(time, time, time, now - 5 * 60_000).all();
   for (const schedule of schedules.results || []) {
     const slot = `${date}T${time}+08:00`;
     await db.prepare(`INSERT OR IGNORE INTO iperf_jobs

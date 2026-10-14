@@ -27,7 +27,8 @@ test('北京时间 03:00 只为启用配置创建当日任务', async () => {
   const insertion = db.calls.find(x => x.sql.includes('INSERT OR IGNORE INTO iperf_jobs'));
   assert.equal(lookup.args[0], '03:00');
   assert.equal(lookup.args[1], '03:00');
-  assert.equal(lookup.args[2], Date.parse('2026-10-13T18:55:00Z'));
+  assert.equal(lookup.args[2], '03:00');
+  assert.equal(lookup.args[3], Date.parse('2026-10-13T18:55:00Z'));
   assert.equal(insertion.args[4], '2026-10-14T03:00+08:00');
 });
 

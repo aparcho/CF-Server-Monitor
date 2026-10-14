@@ -1,7 +1,7 @@
 <template>
   <div v-if="activeTab === 'iperf'" class="tab-content active iperf-panel">
     <h3>iperf3 测速</h3>
-    <p>测试由 deb 发起，使用目标节点的临时 5202 监听。每天可设置日间与晚高峰两次测试，时间均为北京时间；启用后两个时段同时生效。</p>
+    <p>测试由 deb 发起，使用目标节点的临时 5202 监听。每天可设置日间、晚高峰及可选的第二次晚高峰测试，时间均为北京时间。</p>
     <p>新 Linux 节点使用后台安装命令并以 root 安装时会自动接入测速。接入检查通过后可手动测速，定时默认关闭。</p>
     <button class="btn" :disabled="loading" @click="load">↻ 刷新任务</button>
     <p v-if="message" :class="{ 'iperf-error': error }">{{ message }}</p>
@@ -17,12 +17,14 @@
                 <button v-if="enrollment(server.id).status === 'blocked'" class="btn" :disabled="loading || pending(server.id)" @click="retry(server.id)">重新检查</button>
               </div>
             </td>
-            <td><select v-model.number="form(server.id).duration_seconds"><option :value="10">10 秒</option><option :value="30">30 秒</option></select></td>
+            <td><select v-model.number="form(server.id).duration_seconds"><option :value="5">5 秒</option><option :value="10">10 秒</option><option :value="30">30 秒</option></select></td>
             <td><button class="btn" :disabled="loading || pending(server.id) || !ready(server.id)" @click="trigger(server.id)">{{ !ready(server.id) ? '未接入 deb' : pending(server.id) ? '任务进行中' : '开始测速' }}</button></td>
             <td><div class="iperf-schedule">
-              <label><input type="checkbox" v-model="form(server.id).enabled" /> 启用每天两次</label>
+              <label><input type="checkbox" v-model="form(server.id).enabled" /> 启用每日定时</label>
               <label>日间 <input type="time" v-model="form(server.id).time_beijing_day" :aria-label="`${server.name || server.id} 日间时间（北京时间）`" /></label>
               <label>晚高峰 <input type="time" v-model="form(server.id).time_beijing" :aria-label="`${server.name || server.id} 晚高峰时间（北京时间）`" /></label>
+              <label>晚高峰 2（可选） <input type="time" v-model="form(server.id).time_beijing_extra" :aria-label="`${server.name || server.id} 第二次晚高峰时间（北京时间）`" /></label>
+              <button v-if="form(server.id).time_beijing_extra" class="btn" @click="form(server.id).time_beijing_extra = ''">清除第三次</button>
             </div></td>
             <td><button class="btn" :disabled="loading || (form(server.id).enabled && !ready(server.id))" @click="save(server.id)">保存定时</button></td>
           </tr>
@@ -54,7 +56,7 @@ const forms = reactive({})
 const loading = ref(false)
 const message = ref('')
 const error = ref(false)
-const form = (id) => forms[id] ||= { enabled: false, time_beijing_day: '11:30', time_beijing: '21:30', duration_seconds: 10 }
+const form = (id) => forms[id] ||= { enabled: false, time_beijing_day: '11:30', time_beijing: '21:30', time_beijing_extra: '', duration_seconds: 10 }
 const serverName = (id) => props.servers.find(s => s.id === id)?.name || id
 const pending = (id) => jobs.value.some(j => j.server_id === id && ['queued', 'running'].includes(j.status))
 const ready = (id) => readyTargets.value.includes(id)
@@ -80,7 +82,7 @@ async function load() {
   jobs.value = data.jobs || []
   readyTargets.value = data.ready_targets || []
   enrollments.value = data.enrollments || []
-  for (const schedule of data.schedules || []) Object.assign(form(schedule.server_id), { enabled: !!schedule.enabled, time_beijing: schedule.time_beijing, time_beijing_day: schedule.time_beijing_day || '11:30', duration_seconds: schedule.duration_seconds })
+  for (const schedule of data.schedules || []) Object.assign(form(schedule.server_id), { enabled: !!schedule.enabled, time_beijing: schedule.time_beijing, time_beijing_day: schedule.time_beijing_day || '11:30', time_beijing_extra: schedule.time_beijing_extra || '', duration_seconds: schedule.duration_seconds })
 }
 async function trigger(id) {
   const data = await call({ action: 'iperf_trigger', server_id: id, duration_seconds: form(id).duration_seconds })
@@ -90,13 +92,14 @@ async function retry(id) {
   if (await call({ action: 'iperf_onboard_retry', server_id: id })) await load()
 }
 async function save(id) {
-  if (!form(id).time_beijing_day || !form(id).time_beijing || form(id).time_beijing_day === form(id).time_beijing) {
+  const times = [form(id).time_beijing_day, form(id).time_beijing, form(id).time_beijing_extra].filter(Boolean)
+  if (new Set(times).size !== times.length || !form(id).time_beijing_day || !form(id).time_beijing || form(id).time_beijing_day === form(id).time_beijing) {
     error.value = true
-    message.value = '请设置两个不同的测试时间。'
+    message.value = '请设置不同的测试时间。'
     return
   }
   const data = await call({ action: 'iperf_schedule', server_id: id, ...form(id) })
-  if (data) message.value = `定时配置已保存：每天 ${data.time_beijing_day} 和 ${data.time_beijing}（北京时间）。`
+  if (data) message.value = `定时配置已保存：每天 ${[data.time_beijing_day, data.time_beijing, data.time_beijing_extra].filter(Boolean).sort().join('、')}（北京时间）。`
 }
 watch(() => [props.activeTab, props.selectedApiIndex], ([tab]) => { if (tab === 'iperf') load() })
 </script>

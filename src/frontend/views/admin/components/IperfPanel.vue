@@ -1,7 +1,7 @@
 <template>
   <div v-if="activeTab === 'iperf'" class="tab-content active iperf-panel">
     <h3>iperf3 测速</h3>
-    <p>测试由 deb 发起，使用目标节点的临时 5202 监听。定时任务默认关闭，时间均为北京时间。</p>
+    <p>测试由 deb 发起，使用目标节点的临时 5202 监听。每天可设置日间与晚高峰两次测试，时间均为北京时间；启用后两个时段同时生效。</p>
     <button class="btn" :disabled="loading" @click="load">↻ 刷新任务</button>
     <p v-if="message" :class="{ 'iperf-error': error }">{{ message }}</p>
     <div class="iperf-table-wrap">
@@ -12,7 +12,11 @@
             <td>{{ server.name || server.id }}</td>
             <td><select v-model.number="form(server.id).duration_seconds"><option :value="10">10 秒</option><option :value="30">30 秒</option></select></td>
             <td><button class="btn" :disabled="loading || pending(server.id) || !ready(server.id)" @click="trigger(server.id)">{{ !ready(server.id) ? '未接入 deb' : pending(server.id) ? '任务进行中' : '开始测速' }}</button></td>
-            <td><label><input type="checkbox" v-model="form(server.id).enabled" /> 启用</label> <input type="time" v-model="form(server.id).time_beijing" /></td>
+            <td><div class="iperf-schedule">
+              <label><input type="checkbox" v-model="form(server.id).enabled" /> 启用每天两次</label>
+              <label>日间 <input type="time" v-model="form(server.id).time_beijing_day" :aria-label="`${server.name || server.id} 日间时间（北京时间）`" /></label>
+              <label>晚高峰 <input type="time" v-model="form(server.id).time_beijing" :aria-label="`${server.name || server.id} 晚高峰时间（北京时间）`" /></label>
+            </div></td>
             <td><button class="btn" :disabled="loading || (form(server.id).enabled && !ready(server.id))" @click="save(server.id)">保存定时</button></td>
           </tr>
         </tbody>
@@ -36,7 +40,7 @@ const forms = reactive({})
 const loading = ref(false)
 const message = ref('')
 const error = ref(false)
-const form = (id) => forms[id] ||= { enabled: false, time_beijing: '03:00', duration_seconds: 10 }
+const form = (id) => forms[id] ||= { enabled: false, time_beijing_day: '11:30', time_beijing: '21:30', duration_seconds: 10 }
 const serverName = (id) => props.servers.find(s => s.id === id)?.name || id
 const pending = (id) => jobs.value.some(j => j.server_id === id && ['queued', 'running'].includes(j.status))
 const ready = (id) => readyTargets.value.includes(id)
@@ -61,15 +65,20 @@ async function load() {
   if (!data) return
   jobs.value = data.jobs || []
   readyTargets.value = data.ready_targets || []
-  for (const schedule of data.schedules || []) Object.assign(form(schedule.server_id), { enabled: !!schedule.enabled, time_beijing: schedule.time_beijing, duration_seconds: schedule.duration_seconds })
+  for (const schedule of data.schedules || []) Object.assign(form(schedule.server_id), { enabled: !!schedule.enabled, time_beijing: schedule.time_beijing, time_beijing_day: schedule.time_beijing_day || '11:30', duration_seconds: schedule.duration_seconds })
 }
 async function trigger(id) {
   const data = await call({ action: 'iperf_trigger', server_id: id, duration_seconds: form(id).duration_seconds })
   if (data) { message.value = '任务已排队，deb 将在下一次轮询时执行。'; await load() }
 }
 async function save(id) {
+  if (!form(id).time_beijing_day || !form(id).time_beijing || form(id).time_beijing_day === form(id).time_beijing) {
+    error.value = true
+    message.value = '请设置两个不同的测试时间。'
+    return
+  }
   const data = await call({ action: 'iperf_schedule', server_id: id, ...form(id) })
-  if (data) message.value = '定时配置已保存。'
+  if (data) message.value = `定时配置已保存：每天 ${data.time_beijing_day} 和 ${data.time_beijing}（北京时间）。`
 }
 watch(() => [props.activeTab, props.selectedApiIndex], ([tab]) => { if (tab === 'iperf') load() })
 </script>
@@ -81,5 +90,7 @@ watch(() => [props.activeTab, props.selectedApiIndex], ([tab]) => { if (tab === 
 .iperf-table-wrap { overflow-x: auto; margin: 16px 0; }
 .iperf-table { width: 100%; border-collapse: collapse; min-width: 620px; }
 .iperf-table th, .iperf-table td { padding: 10px; border-bottom: 1px solid #7774; text-align: left; }
+.iperf-schedule { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.iperf-schedule label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .iperf-table input[type=time], .iperf-table select { color: inherit; background: transparent; border: 1px solid #7778; border-radius: 4px; padding: 5px; }
 </style>

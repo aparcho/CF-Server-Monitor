@@ -32,8 +32,23 @@
       </table>
     </div>
     <h4>最近任务</h4>
+    <p class="iperf-result-hint">下载、上传均以 deb 为视角；单位 Mbps，括号内为 TCP 重传次数。</p>
     <div class="iperf-table-wrap"><table class="iperf-table"><thead><tr><th>节点</th><th>来源</th><th>状态</th><th>创建时间</th><th>结果</th></tr></thead>
-      <tbody><tr v-for="job in jobs" :key="job.id"><td>{{ serverName(job.server_id) }}</td><td>{{ job.source === 'onboarding' ? '自动接入检查' : job.source === 'scheduled' ? '定时' : '手动' }}</td><td>{{ statusName(job.status) }}</td><td>{{ formatTime(job.created_at) }}</td><td>{{ job.status === 'failed' ? (job.error || '失败') : job.source === 'onboarding' && job.status === 'completed' ? '公网检查通过' : (job.result_count ?? '—') }}</td></tr></tbody>
+      <tbody><tr v-for="job in jobs" :key="job.id">
+        <td>{{ serverName(job.server_id) }}</td>
+        <td>{{ job.source === 'onboarding' ? '自动接入检查' : job.source === 'scheduled' ? '定时' : '手动' }}</td>
+        <td class="iperf-job-status">{{ statusName(job.status) }}</td>
+        <td class="iperf-job-time">{{ formatTime(job.created_at) }}</td>
+        <td class="iperf-job-results">
+          <div v-for="family in resultFamilies(job)" :key="family.key" class="iperf-result-family">
+            <span class="iperf-family-label">{{ family.label }}</span>
+            <span :title="resultTitle(job, family.key, 'download')">↓ {{ resultValue(job, family.key, 'download') }}</span>
+            <span :title="resultTitle(job, family.key, 'upload')">↑ {{ resultValue(job, family.key, 'upload') }}</span>
+          </div>
+          <div v-if="job.status === 'failed'" class="iperf-error iperf-job-error">{{ job.error || '失败' }}</div>
+          <template v-else-if="!job.results?.length">{{ job.source === 'onboarding' && job.status === 'completed' ? '公网检查通过' : job.result_count != null ? `${job.result_count} 项结果 · 暂无明细` : '—' }}</template>
+        </td>
+      </tr></tbody>
     </table></div>
   </div>
 </template>
@@ -62,6 +77,19 @@ const pending = (id) => jobs.value.some(j => j.server_id === id && ['queued', 'r
 const ready = (id) => readyTargets.value.includes(id)
 const statusName = (status) => ({ queued: '等待执行', running: '测速中', completed: '已完成', failed: '失败' })[status] || status
 const formatTime = (ms) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'medium' }).format(new Date(ms))
+const resultFamilies = (job) => [{ key: 'ipv4', label: 'IPv4' }, { key: 'ipv6', label: 'IPv6' }].filter(family => job.results?.some(row => row.family === family.key))
+const resultRow = (job, family, direction) => job.results?.find(row => row.family === family && row.direction === direction)
+const resultValue = (job, family, direction) => {
+  const row = resultRow(job, family, direction)
+  if (!row) return '—'
+  if (row.status !== 'ok') return row.status === 'no_response' ? '无响应' : '失败'
+  if (row.mbps == null || !Number.isFinite(Number(row.mbps))) return '—'
+  return `${Number(row.mbps).toFixed(2)}（${row.retransmits ?? '—'}）`
+}
+const resultTitle = (job, family, direction) => {
+  const row = resultRow(job, family, direction)
+  return row?.error || (row?.status === 'ok' ? `${Number(row.mbps).toFixed(2)} Mbps，TCP 重传 ${row.retransmits ?? '—'} 次` : '')
+}
 async function call(data) {
   loading.value = true
   message.value = ''
@@ -115,4 +143,10 @@ watch(() => [props.activeTab, props.selectedApiIndex], ([tab]) => { if (tab === 
 .iperf-schedule { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
 .iperf-schedule label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .iperf-table input[type=time], .iperf-table select { color: inherit; background: transparent; border: 1px solid #7778; border-radius: 4px; padding: 5px; }
+.iperf-job-status, .iperf-job-time { white-space: nowrap; }
+.iperf-job-results { min-width: 380px; font-variant-numeric: tabular-nums; }
+.iperf-result-family { display: grid; grid-template-columns: 44px minmax(145px, 1fr) minmax(145px, 1fr); gap: 8px; line-height: 1.7; white-space: nowrap; }
+.iperf-family-label, .iperf-result-hint { opacity: .7; }
+.iperf-result-hint { font-size: 12px; }
+.iperf-job-error { margin-top: 4px; overflow-wrap: anywhere; }
 </style>

@@ -5,7 +5,7 @@ const FAMILIES = new Set(['ipv4', 'ipv6']);
 const DIRECTIONS = new Set(['upload', 'download']);
 const STATUSES = new Set(['ok', 'no_response', 'failed']);
 
-async function ensureTable(db) {
+export async function ensureIperfResultsTable(db) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS iperf_results (
     run_id TEXT NOT NULL, server_id TEXT NOT NULL, source TEXT NOT NULL,
     family TEXT NOT NULL, direction TEXT NOT NULL, tested_at INTEGER NOT NULL,
@@ -14,6 +14,29 @@ async function ensureTable(db) {
     PRIMARY KEY (run_id, server_id, family, direction)
   )`).run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_iperf_server_time ON iperf_results(server_id, tested_at DESC)').run();
+}
+
+export async function getIperfJobResults(db) {
+  await ensureIperfResultsTable(db);
+  // 旧任务没有 run_id 外键：仅在同节点、同测试时长、实际执行窗口内唯一批次时关联。
+  // 不借用该节点的“最近一次”结果，失败清理任务也保留已完成的测速方向。
+  const rows = (await db.prepare(`SELECT j.id AS job_id,r.* FROM
+    (SELECT * FROM iperf_jobs ORDER BY created_at DESC LIMIT 100) j
+    JOIN iperf_results r ON r.server_id=j.server_id AND r.source='deb'
+      AND r.duration_seconds=j.duration_seconds
+      AND r.tested_at>=j.started_at AND r.tested_at<=COALESCE(j.finished_at,?)
+    WHERE j.source!='onboarding' AND j.started_at IS NOT NULL
+      AND (j.finished_at IS NOT NULL OR j.status='running')
+    ORDER BY r.tested_at,r.family,r.direction`).bind(Date.now()).all()).results || [];
+  const groups = new Map();
+  for (const row of rows) {
+    if (!groups.has(row.job_id)) groups.set(row.job_id, []);
+    groups.get(row.job_id).push(row);
+  }
+  for (const [id, results] of groups) {
+    if (new Set(results.map(row => row.run_id)).size !== 1) groups.set(id, []);
+  }
+  return groups;
 }
 
 export function validateIperfResult(value) {
@@ -44,7 +67,7 @@ export async function handleIperfReport(request, env) {
   if (rows.length < 1 || rows.length > 8) return createBadRequestResponse('invalidBatchSize');
   const results = rows.map(validateIperfResult);
   if (results.some(x => !x)) return createBadRequestResponse('invalidIperfResult');
-  await ensureTable(env.DB);
+  await ensureIperfResultsTable(env.DB);
   for (const row of results) {
     const exists = await env.DB.prepare('SELECT id FROM servers WHERE id = ?').bind(row.server_id).first();
     if (!exists) return createBadRequestResponse('unknownServer');
@@ -64,7 +87,7 @@ export async function handleIperfResults(request, env, sys) {
   const url = new URL(request.url);
   const serverId = url.searchParams.get('id');
   if (!serverId || !/^[a-zA-Z0-9._:-]{1,100}$/.test(serverId)) return createBadRequestResponse('invalidServerId');
-  await ensureTable(env.DB);
+  await ensureIperfResultsTable(env.DB);
   if (url.searchParams.get('view') === 'history') {
     const requestedPage = Number(url.searchParams.get('page') || 1);
     const pageSize = Number(url.searchParams.get('page_size') || 5);

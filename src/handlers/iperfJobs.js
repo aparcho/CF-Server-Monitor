@@ -1,4 +1,5 @@
 import { iperfAudit } from '../utils/iperfAudit.js';
+import { getIperfJobResults } from './iperf.js';
 import { createBadRequestResponse, createSuccessResponse, createUnauthorizedResponse } from '../utils/errors.js';
 import { finishIperfAutoCheck, getIperfAutoTarget, listIperfEnrollments, retryIperfEnrollment } from './iperfAuto.js';
 
@@ -51,13 +52,14 @@ export async function handleIperfAdminAction(data, env) {
   await ensureIperfJobTables(env.DB);
   const { action } = data;
   if (action === 'iperf_list') {
-    const [jobs, schedules, targets, enrollments] = await Promise.all([
+    const [jobs, schedules, targets, enrollments, results] = await Promise.all([
       env.DB.prepare('SELECT * FROM iperf_jobs ORDER BY created_at DESC LIMIT 100').all(),
       env.DB.prepare('SELECT * FROM iperf_schedules ORDER BY server_id').all(),
       env.DB.prepare('SELECT server_id FROM iperf_targets WHERE last_seen>?').bind(Date.now() - 5 * 60_000).all(),
-      listIperfEnrollments(env.DB)
+      listIperfEnrollments(env.DB),
+      getIperfJobResults(env.DB)
     ]);
-    return createSuccessResponse({ jobs: jobs.results || [], schedules: schedules.results || [], enrollments,
+    return createSuccessResponse({ jobs: (jobs.results || []).map(job => ({ ...job, results: results.get(job.id) || [] })), schedules: schedules.results || [], enrollments,
       ready_targets: (targets.results || []).map(row => row.server_id) });
   }
   const id = data.server_id;

@@ -54,7 +54,7 @@
 </template>
 
 <script setup>
-import { reactive, ref, watch } from 'vue'
+import { onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { adminApi } from '../../../utils/api'
 
 const props = defineProps({ activeTab: String, servers: { type: Array, default: () => [] }, selectedApiIndex: Number })
@@ -90,31 +90,54 @@ const resultTitle = (job, family, direction) => {
   const row = resultRow(job, family, direction)
   return row?.error || (row?.status === 'ok' ? `${Number(row.mbps).toFixed(2)} Mbps，TCP 重传 ${row.retransmits ?? '—'} 次` : '')
 }
-async function call(data) {
-  loading.value = true
-  message.value = ''
+let pollTimer = null
+let listRequests = 0
+let loadSequence = 0
+let disposed = false
+const stopPolling = () => { clearTimeout(pollTimer); pollTimer = null }
+const schedulePolling = () => {
+  stopPolling()
+  if (disposed || props.activeTab !== 'iperf' || !jobs.value.some(job => ['queued', 'running'].includes(job.status))) return
+  pollTimer = setTimeout(() => {
+    pollTimer = null
+    if (loading.value || listRequests) schedulePolling()
+    else load({ background: true })
+  }, 5000)
+}
+async function call(data, background = false) {
+  if (!background) { loading.value = true; message.value = '' }
   try {
     const response = await adminApi(data, props.selectedApiIndex)
     if (response.error) throw new Error(response.error)
-    error.value = false
+    if (!background) error.value = false
     return response.data
   } catch (cause) {
-    error.value = true
-    message.value = cause.message || '请求失败'
+    if (!background) { error.value = true; message.value = cause.message || '请求失败' }
     return null
-  } finally { loading.value = false }
+  } finally { if (!background) loading.value = false }
 }
-async function load() {
-  const data = await call({ action: 'iperf_list' })
-  if (!data) return
-  jobs.value = data.jobs || []
-  readyTargets.value = data.ready_targets || []
-  enrollments.value = data.enrollments || []
-  for (const schedule of data.schedules || []) Object.assign(form(schedule.server_id), { enabled: !!schedule.enabled, time_beijing: schedule.time_beijing, time_beijing_day: schedule.time_beijing_day || '11:30', time_beijing_extra: schedule.time_beijing_extra || '', duration_seconds: schedule.duration_seconds })
+async function load(options = {}) {
+  const background = options.background === true
+  const sequence = ++loadSequence
+  stopPolling()
+  listRequests++
+  try {
+    const data = await call({ action: 'iperf_list' }, background)
+    if (!data || disposed || sequence !== loadSequence || props.activeTab !== 'iperf') return
+    jobs.value = data.jobs || []
+    readyTargets.value = data.ready_targets || []
+    enrollments.value = data.enrollments || []
+    // 自动刷新只更新任务；保留用户尚未保存的定时与时长编辑。
+    if (!background) for (const schedule of data.schedules || []) Object.assign(form(schedule.server_id), { enabled: !!schedule.enabled, time_beijing: schedule.time_beijing, time_beijing_day: schedule.time_beijing_day || '11:30', time_beijing_extra: schedule.time_beijing_extra || '', duration_seconds: schedule.duration_seconds })
+  } finally { listRequests--; schedulePolling() }
 }
 async function trigger(id) {
   const data = await call({ action: 'iperf_trigger', server_id: id, duration_seconds: form(id).duration_seconds })
-  if (data) { message.value = '任务已排队，deb 将在下一次轮询时执行。'; await load() }
+  if (data) {
+    jobs.value = [{ id: data.id, server_id: id, source: 'manual', status: 'queued', created_at: Date.now() }, ...jobs.value]
+    message.value = '任务已排队，deb 将在下一次轮询时执行。'
+    await load()
+  }
 }
 async function retry(id) {
   if (await call({ action: 'iperf_onboard_retry', server_id: id })) await load()
@@ -129,7 +152,12 @@ async function save(id) {
   const data = await call({ action: 'iperf_schedule', server_id: id, ...form(id) })
   if (data) message.value = `定时配置已保存：每天 ${[data.time_beijing_day, data.time_beijing, data.time_beijing_extra].filter(Boolean).sort().join('、')}（北京时间）。`
 }
-watch(() => [props.activeTab, props.selectedApiIndex], ([tab]) => { if (tab === 'iperf') load() })
+watch(() => [props.activeTab, props.selectedApiIndex], ([tab]) => {
+  ++loadSequence
+  stopPolling()
+  if (tab === 'iperf') load()
+}, { immediate: true })
+onBeforeUnmount(() => { disposed = true; ++loadSequence; stopPolling() })
 </script>
 
 <style scoped>

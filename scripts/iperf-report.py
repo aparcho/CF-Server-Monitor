@@ -44,6 +44,18 @@ def probe(server, family, address, direction, duration, port, run_id, output):
     return row
 
 
+def upload(config, token, rows):
+    req = urllib.request.Request(config["worker_url"].rstrip("/") + "/api/iperf/report",
+        data=json.dumps({"results": rows}).encode(), method="POST",
+        headers={"Content-Type": "application/json", "X-Iperf-Token": token,
+                 "User-Agent": "CFSM-Iperf/1.1"})
+    with urllib.request.urlopen(req, timeout=8) as response:
+        ack = json.loads(response.read())
+    if ack.get("success") is not True or ack.get("count") != len(rows):
+        raise ValueError("invalid report acknowledgement")
+    print(f"uploaded {len(rows)} result(s)", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config", help="JSON with worker_url and targets [{id, ipv4, ipv6, port}]")
@@ -61,6 +73,7 @@ def main():
     output = pathlib.Path(args.output) / run_id
     output.mkdir(parents=True, exist_ok=False)
     rows = []
+    pending = []
     for server in config["targets"]:
         for family in ("ipv4", "ipv6"):
             address = server.get(family)
@@ -83,27 +96,30 @@ def main():
                                duration_seconds=args.duration, port=int(server.get("port", 5202)),
                                status="no_response", mbps=None, retransmits=None, error="timeout")
                 rows.append(row)
+                # Persist every direction before networking, including failed probes.
+                summary = output / "summary.json"
+                temporary = output / "summary.json.tmp"
+                temporary.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+                temporary.replace(summary)
+                if not args.no_upload:
+                    try:
+                        upload(config, token, [row])
+                    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+                        pending.append(row)
+                        print(f"report deferred ({type(exc).__name__}); continuing probes", flush=True)
                 print(f"{server['id']} {family} {direction}: {row['status']} {row['mbps']} Mbps", flush=True)
-    (output / "summary.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     if args.no_upload:
         return
-    for start in range(0, len(rows), 8):
-        req = urllib.request.Request(config["worker_url"].rstrip("/") + "/api/iperf/report",
-            data=json.dumps({"results": rows[start:start + 8]}).encode(), method="POST",
-            headers={"Content-Type": "application/json", "X-Iperf-Token": token,
-                     "User-Agent": "CFSM-Iperf/1.0"})
+    # Retry only unacknowledged results; the API upserts the same run/family/direction.
+    for start in range(0, len(pending), 8):
         for attempt in range(3):
             try:
-                with urllib.request.urlopen(req, timeout=30) as response:
-                    print(response.read().decode(), flush=True)
+                upload(config, token, pending[start:start + 8])
                 break
-            except urllib.error.HTTPError as exc:
-                if exc.code < 500 or attempt == 2:
-                    raise
-            except (urllib.error.URLError, TimeoutError):
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError):
                 if attempt == 2:
-                    raise
-            time.sleep(2 * (attempt + 1))
+                    raise RuntimeError(f"result upload failed; local results: {output}") from None
+                time.sleep(2 * (attempt + 1))
 
 
 if __name__ == "__main__":

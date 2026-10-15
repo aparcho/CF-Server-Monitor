@@ -8,6 +8,7 @@ import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
 import { handleTheme } from './handlers/theme.js';
 import { handleIperfReport, handleIperfResults } from './handlers/iperf.js';
 import { handleIperfClaim, handleIperfFinish, handleIperfTargets, enqueueDueIperfJobs } from './handlers/iperfJobs.js';
+import { iperfAudit, traceIperfRequest } from './utils/iperfAudit.js';
 import { handleIperfBootstrap, handleIperfNode, handleIperfListener } from './handlers/iperfAuto.js';
 import { isValidThemeOptions, loadSettings, loadSiteSettings, loadAppearanceOptions, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, saveThemeOptions, setDebug, debug } from './utils/settings.js';
 import { omitNullLossProbeFields } from './handlers/dashboard.js';
@@ -289,9 +290,9 @@ export default {
       { method: 'POST', path: '/api/iperf/node', handler: () => handleIperfNode(request, env) },
       { method: 'POST', path: '/api/iperf/listener', handler: () => handleIperfListener(request, env) },
       { method: 'POST', path: '/api/iperf/report', handler: () => handleIperfReport(request, env) },
-      { method: 'POST', path: '/api/iperf/jobs/claim', handler: () => handleIperfClaim(request, env) },
-      { method: 'POST', path: '/api/iperf/jobs/finish', handler: () => handleIperfFinish(request, env) },
-      { method: 'POST', path: '/api/iperf/targets', handler: () => handleIperfTargets(request, env) },
+      { method: 'POST', path: '/api/iperf/jobs/claim', handler: () => traceIperfRequest(env.DB, '/api/iperf/jobs/claim', () => handleIperfClaim(request, env)) },
+      { method: 'POST', path: '/api/iperf/jobs/finish', handler: () => traceIperfRequest(env.DB, '/api/iperf/jobs/finish', () => handleIperfFinish(request, env)) },
+      { method: 'POST', path: '/api/iperf/targets', handler: () => traceIperfRequest(env.DB, '/api/iperf/targets', () => handleIperfTargets(request, env)) },
       { method: 'GET', path: '/api/iperf/results', handler: async () => {
         await ensureSiteSettings();
         return handleIperfResults(request, env, sys);
@@ -488,12 +489,14 @@ export default {
     debug(`[Cron] 定时任务触发: ${cron}`);
 
     const now = new Date();
+    const auditId = await iperfAudit(env.DB, 'cron_enter', { cron, scheduled_at: event.scheduledTime ?? null });
+    try {
     const day = now.getUTCDay();
     const hour = now.getUTCHours();
     const minute = now.getUTCMinutes();
     
     if (cron === '*/1 * * * *') {
-      await enqueueDueIperfJobs(env.DB, now.getTime(), {cron,scheduledTime:event.scheduledTime});
+      await enqueueDueIperfJobs(env.DB, now.getTime(), {cron,scheduledTime:event.scheduledTime,correlationId:auditId});
       if (day === 0 && hour === 0 && minute < 5) {
         debug('[Cron] 每周日0:00-0:05表轮换期间，跳过离线节点检测');
       } else {
@@ -522,6 +525,15 @@ export default {
         await checkExpiringServers(env.DB);
         debug('[Cron DEBUG] 服务器到期检测完成');
       }
+    }
+    await iperfAudit(env.DB, 'cron_complete', { cron }, auditId);
+    if (cron === '0 * * * *') {
+      const cutoff = Date.now() - 7 * 86400_000;
+      await env.DB.prepare('DELETE FROM iperf_event_audit WHERE observed_at<?').bind(cutoff).run();
+    }
+    } catch (error) {
+      await iperfAudit(env.DB, 'cron_error', { cron, error: String(error.message || error).slice(0, 500) }, auditId);
+      throw error;
     }
   }
 };

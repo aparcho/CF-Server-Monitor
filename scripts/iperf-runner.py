@@ -13,7 +13,27 @@ import socket
 import time
 
 
+def audit(phase, **detail):
+    entry = {'scope': 'iperf_runner', 'phase': phase, 'observed_at': time.time_ns() // 1_000_000,
+             'pid': os.getpid(), **detail}
+    line = json.dumps(entry, ensure_ascii=False)
+    print(line, flush=True)
+    try:
+        folder = Path('/root/cfsm-iperf-runner-audit')
+        folder.mkdir(mode=0o700, exist_ok=True)
+        path = folder / (time.strftime('%Y-%m-%d', time.gmtime()) + '.jsonl')
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as log:
+            log.write(line + '\n')
+        for old in folder.glob('????-??-??.jsonl'):
+            if old.stat().st_mtime < time.time() - 14 * 86400:
+                old.unlink()
+    except OSError as exc:
+        print(f'runner audit write failed: {exc}', file=sys.stderr, flush=True)
+
+
 def api(base, token, path, payload):
+    started = time.monotonic()
+    audit('api_begin', path=path, job_id=payload.get('id'))
     if any(char in token for char in '\r\n"\\'):
         raise ValueError('invalid token format')
     with tempfile.NamedTemporaryFile(mode='w', prefix='.cfsm-curl-', dir='/root/.config/cfsm') as options:
@@ -25,8 +45,13 @@ def api(base, token, path, payload):
             '--data-binary', '@-', base.rstrip('/') + path], input=json.dumps(payload),
             text=True, capture_output=True, timeout=35)
     if result.returncode:
+        audit('api_error', path=path, job_id=payload.get('id'), returncode=result.returncode,
+              elapsed_ms=round((time.monotonic() - started) * 1000))
         raise RuntimeError((result.stderr or result.stdout).strip()[:200] or 'Worker request failed')
-    return json.loads(result.stdout)
+    response = json.loads(result.stdout)
+    audit('api_complete', path=path, job_id=payload.get('id'),
+          elapsed_ms=round((time.monotonic() - started) * 1000))
+    return response
 
 
 def remote(host, script, timeout=20, identity_file=None):
@@ -154,6 +179,7 @@ ss -ltnp '( sport = :5201 )' | tail -n +2
 
 
 def main():
+    audit('runner_enter')
     parser = argparse.ArgumentParser()
     parser.add_argument('config', help='local allowlist JSON with worker_url and targets')
     parser.add_argument('--token-file', default='/root/.config/cfsm/iperf-token')
@@ -167,8 +193,10 @@ def main():
         {'server_ids': [target['id'] for target in config['targets']]})
     job = api(config['worker_url'], token, '/api/iperf/jobs/claim', {})
     if not job:
+        audit('claim_empty')
         print('no queued job')
         return
+    audit('job_claimed', job_id=job['id'], server_id=job['server_id'], source=job.get('source'))
     error = None
     count = 0
     listener = None
@@ -223,7 +251,9 @@ def main():
             'id': job['id'], 'status': 'failed' if error else 'completed',
             'result_count': count, 'error': error})
     if error:
+        audit('job_failed', job_id=job['id'], error=error)
         raise RuntimeError(error)
+    audit('job_completed', job_id=job['id'], result_count=count)
     print(f"completed {job['id']} ({count} results)")
 
 
@@ -231,5 +261,8 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as exc:
+        audit('runner_error', error=str(exc)[:500])
         print(f'error: {exc}', file=sys.stderr)
         sys.exit(1)
+    finally:
+        audit('runner_exit')

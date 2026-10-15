@@ -1,3 +1,4 @@
+import { iperfAudit } from '../utils/iperfAudit.js';
 import { createBadRequestResponse, createSuccessResponse, createUnauthorizedResponse } from '../utils/errors.js';
 import { finishIperfAutoCheck, getIperfAutoTarget, listIperfEnrollments, retryIperfEnrollment } from './iperfAuto.js';
 
@@ -87,6 +88,7 @@ export async function handleIperfAdminAction(data, env) {
       time_beijing=excluded.time_beijing,time_beijing_day=excluded.time_beijing_day,time_beijing_extra=excluded.time_beijing_extra,
       duration_seconds=excluded.duration_seconds,updated_at=excluded.updated_at`)
       .bind(id, enabled, time, dayTime, extraTime, duration, Date.now()).run();
+    await iperfAudit(env.DB, 'schedule_saved', { server_id: id, enabled, times: [dayTime,time,extraTime], duration_seconds: duration });
     return createSuccessResponse({ server_id: id, enabled, time_beijing: time, time_beijing_day: dayTime, time_beijing_extra: extraTime, duration_seconds: duration });
   }
   return createBadRequestResponse('unknownIperfAction');
@@ -112,6 +114,13 @@ export async function enqueueDueIperfJobs(db, now = Date.now(), event = {}) {
     VALUES (?,?,?,?,?,?)`).bind(auditId,now,event.scheduledTime ?? null,event.cron || '',`${date}T${time}+08:00`,
       JSON.stringify(snapshot.map(s => ({server_id:s.server_id,updated_at:s.updated_at,times:[s.time_beijing_day,s.time_beijing,s.time_beijing_extra],target_last_seen:s.target_last_seen,
         due:[s.time_beijing,s.time_beijing_day,s.time_beijing_extra].includes(time),ready:s.target_last_seen > now-5*60_000})))).run();
+  const correlationId = event.correlationId || auditId;
+  await iperfAudit(db, 'dispatch_selected', { audit_id: auditId, matched_minute: `${date}T${time}+08:00`,
+    scheduled_at: event.scheduledTime ?? null, selection: snapshot.map(s => ({
+      server_id: s.server_id, target_last_seen: s.target_last_seen ?? null,
+      reason: ![s.time_beijing,s.time_beijing_day,s.time_beijing_extra].includes(time) ? 'time_not_due'
+        : !(s.target_last_seen > now-5*60_000) ? 'target_not_ready' : 'eligible'
+    })) }, correlationId);
   let enqueued = 0;
   try { for (const schedule of schedules) {
     const slot = `${date}T${time}+08:00`;
@@ -119,14 +128,19 @@ export async function enqueueDueIperfJobs(db, now = Date.now(), event = {}) {
       (id,server_id,source,status,duration_seconds,scheduled_slot,created_at)
       VALUES (?,?,?,'queued',?,?,?)`).bind(crypto.randomUUID(), schedule.server_id,
       'scheduled', schedule.duration_seconds, slot, now).run();
-    enqueued += result.meta?.changes || 0;
+    const inserted = result.meta?.changes || 0;
+    enqueued += inserted;
+    const blockers = inserted ? [] : (await db.prepare(`SELECT id,status,scheduled_slot FROM iperf_jobs
+      WHERE server_id=? AND (scheduled_slot=? OR status IN ('queued','running'))`).bind(schedule.server_id,slot).all()).results || [];
+    await iperfAudit(db, 'enqueue_result', { audit_id: auditId, server_id: schedule.server_id,
+      slot, inserted, blockers }, correlationId);
   } } catch (error) {
     await db.prepare('UPDATE iperf_dispatch_audit SET error=? WHERE id=?').bind(String(error.message || error).slice(0,300),auditId).run();
     throw error;
   } finally {
     await db.prepare('UPDATE iperf_dispatch_audit SET enqueued=? WHERE id=?').bind(enqueued,auditId).run();
   }
-  await db.prepare('DELETE FROM iperf_dispatch_audit WHERE observed_at<?').bind(now-2*86400_000).run();
+  await db.prepare('DELETE FROM iperf_dispatch_audit WHERE observed_at<?').bind(now-7*86400_000).run();
 }
 
 function runnerAuthorized(request, env) {
@@ -143,9 +157,11 @@ export async function handleIperfTargets(request, env) {
   }
   await ensureIperfJobTables(env.DB);
   for (const id of ids) if (!await serverExists(env.DB, id)) return createBadRequestResponse('unknownServer');
+  const refreshId = await iperfAudit(env.DB, 'targets_refresh_begin', { server_ids: ids });
   await env.DB.prepare("DELETE FROM iperf_targets WHERE source='deb'").run();
   for (const id of ids) await env.DB.prepare('INSERT INTO iperf_targets (server_id,source,last_seen) VALUES (?,?,?)')
     .bind(id, 'deb', Date.now()).run();
+  await iperfAudit(env.DB, 'targets_refresh_complete', { server_ids: ids }, refreshId);
   return createSuccessResponse({ count: ids.length });
 }
 
@@ -156,11 +172,12 @@ export async function handleIperfClaim(request, env) {
   await env.DB.prepare("UPDATE iperf_jobs SET status='failed',finished_at=?,error='runner lease expired' WHERE status='running' AND started_at<?")
     .bind(now, now - 20 * 60_000).run();
   const candidate = await env.DB.prepare("SELECT id FROM iperf_jobs WHERE status='queued' ORDER BY created_at LIMIT 1").first();
-  if (!candidate) return createSuccessResponse(null);
+  if (!candidate) { await iperfAudit(env.DB, 'claim_empty'); return createSuccessResponse(null); }
   const claimed = await env.DB.prepare("UPDATE iperf_jobs SET status='running',started_at=? WHERE id=? AND status='queued'")
     .bind(now, candidate.id).run();
   if (!claimed.meta?.changes) return createSuccessResponse(null);
   const job = await env.DB.prepare('SELECT id,server_id,duration_seconds,source FROM iperf_jobs WHERE id=?').bind(candidate.id).first();
+  await iperfAudit(env.DB, 'job_claimed', { job_id: job.id, server_id: job.server_id, source: job.source });
   job.auto_target = await getIperfAutoTarget(env.DB, job.server_id);
   return createSuccessResponse(job);
 }
@@ -177,6 +194,7 @@ export async function handleIperfFinish(request, env) {
   const result = await env.DB.prepare("UPDATE iperf_jobs SET status=?,finished_at=?,error=?,result_count=? WHERE id=? AND status='running'")
     .bind(body.status, Date.now(), typeof body.error === 'string' ? body.error.slice(0, 200) : null,
       body.result_count, body.id).run();
+  await iperfAudit(env.DB, 'job_finish', { job_id: body.id, server_id: job?.server_id ?? null, status: body.status, result_count: body.result_count, applied: result.meta?.changes || 0, error: typeof body.error === 'string' ? body.error.slice(0,200) : null });
   if (!result.meta?.changes) return createBadRequestResponse('iperfJobNotRunning');
   await finishIperfAutoCheck(env.DB, job, body.status, typeof body.error === 'string' ? body.error.slice(0, 200) : null);
   return createSuccessResponse({ success: true });

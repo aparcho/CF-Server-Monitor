@@ -67,3 +67,31 @@ CFSM 后台新增“测速”页，可逐台选择 10 秒或 30 秒单项时长�
 执行器每分钟把本机白名单同步到 Worker。最近五分钟未同步的节点在后台显示“未接入 deb”，不能手动触发或启用定时任务；已有定时任务在目标不可用时不会排队。截至 2026-10-14，`DMIT.LAX`、`Legend.SG`、`OCI.TYO`、`AWS.HKG`、`AWS.TYO` 已加入 deb 白名单，手动完成双栈双向验收。接入验收时定时开关全部关闭，后续启用状态与每日两个测试时间以后台已保存配置为准。按当前接入决定，`HK-MO` 暂不接入：它是无主机防火墙管理权限的容器，公网 `5202` 到容器的映射尚未打通；该节点不加入白名单，也不开启定时任务。
 
 可使用 `scripts/systemd/cfsm-iperf-runner.service` 和 `.timer` 在 deb 安装轮询。密钥仍仅保存在 `/root/.config/cfsm/iperf-token`，不写入 unit、仓库或浏览器。`iperf_jobs` 与 `iperf_schedules` 表由 Worker 自动创建。回滚时先停止 timer、等待正在运行的 service 完成，再恢复 deb 上的 `/root/iperf-runner-before-all-20261014.py` 与 `/root/cfsm-iperf-targets-before-all-20261014.json`；如需回滚 Worker，再部署备份 Worker。D1 历史任务和测速结果可保留，不影响旧版本运行。TYO 的专用脚本位于 `/usr/local/sbin/cfsm-iperf-ufw-listener`，回滚后确认 transient service 已停止且无 `CFSM deb temporary` 规则，再按需移除该脚本。
+
+### 定时漏派诊断日志（2026-10-15）
+
+本轮只增加日志，不改变匹配时段、节点筛选或执行规则。
+
+- Cloudflare Workers 持久日志：筛选 `scope = iperf`，查看 `cron_enter`、`dispatch_selected`、`enqueue_result`、`cron_complete` / `cron_error`。日志不依赖站点 DEBUG 开关；写入 D1 失败时另输出 `audit_write_failed`。
+- D1：`iperf_dispatch_audit` 保存每次派发使用的配置和就绪快照，`iperf_event_audit` 保存事件，两者保留 7 天。`correlation_id` 关联同次 Cron 或 HTTP 请求，任务用 `job_id` 关联。配置保存、节点刷新开始/完成、空队列、领取与完成也会记录。
+- `enqueue_result.inserted=0` 时记录占用该节点或同一时段的任务 `blockers`；筛选原因包括 `time_not_due`、`target_not_ready`、`eligible`。对照计划与实际时间，可判断是否跨分钟。
+- deb：systemd journal 同时输出结构化事件，另在 `/root/cfsm-iperf-runner-audit/YYYY-MM-DD.jsonl` 按 UTC 日期保存 14 天。记录启动、API 调用阶段与耗时、领取、完成和错误，不记录 Token、请求头或完整配置。
+
+按北京时间检查某次漏派，先查询对应时段（下面日期与时段需按实际情况替换）：
+
+```sql
+SELECT datetime(observed_at/1000,'unixepoch','+8 hours') AS beijing,
+       phase,correlation_id,detail
+FROM iperf_event_audit
+WHERE observed_at BETWEEN unixepoch('2026-10-15 12:55:00')*1000
+                      AND unixepoch('2026-10-15 14:15:00')*1000
+ORDER BY observed_at;
+```
+
+```sh
+journalctl -u cfsm-iperf-runner.service --since '2026-10-15 20:55:00 +0800' --until '2026-10-15 22:15:00 +0800' --no-pager
+```
+
+判断顺序：有无 Cron 进入 → 配置与时间是否匹配 → 节点是否就绪 → 入队是否被已有任务阻挡 → deb 是否拉取 → 测试、回报与清理是否成功。若某分钟没有进入记录，还需结合 Cloudflare Cron 事件历史、前后分钟日志、部署记录和日志平台状态判断，不能仅凭一处日志缺失认定平台未触发。
+
+回滚基线：本地分支 `backup/pre-iperf-audit-20261015`；deb 更新前脚本保存为 `/root/iperf-runner-before-audit-20261015.py`。诊断表可保留，不影响旧代码。

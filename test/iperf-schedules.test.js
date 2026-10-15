@@ -107,3 +107,26 @@ test('三次5秒：迁移不新增默认时段，第三次去重，旧客户端�
     assert.equal((await (await handleIperfAdminAction({...action,time_beijing_extra:''},{DB})).json()).time_beijing_extra,null);
   } finally {sqlite.close();}
 });
+
+test('诊断记录区分时间未到、未就绪、已有任务冲突并关联派发', { skip: !DatabaseSync }, async () => {
+  const { DB, sqlite } = database();
+  try {
+    await ensureIperfJobTables(DB);
+    const now = Date.parse('2026-10-15T14:00:00Z');
+    sqlite.exec("INSERT INTO servers VALUES ('busy'),('unready'),('later')");
+    const save = sqlite.prepare('INSERT INTO iperf_schedules (server_id,enabled,time_beijing,duration_seconds,updated_at) VALUES (?,1,?,5,?)');
+    for (const [id,time] of [['busy','22:00'],['unready','22:00'],['later','23:00']]) save.run(id,time,now);
+    sqlite.prepare('INSERT INTO iperf_targets VALUES (?,?,?)').run('busy','deb',now);
+    sqlite.prepare("INSERT INTO iperf_jobs (id,server_id,source,status,duration_seconds,created_at) VALUES ('old','busy','manual','running',5,?)").run(now);
+    await enqueueDueIperfJobs(DB, now, {correlationId:'cron-example',scheduledTime:now-2000});
+    const rows = sqlite.prepare('SELECT * FROM iperf_event_audit ORDER BY rowid').all();
+    const selection = JSON.parse(rows.find(r=>r.phase==='dispatch_selected').detail).selection;
+    assert.deepEqual(selection.map(x=>[x.server_id,x.reason]).sort(), [
+      ['busy','eligible'],['later','time_not_due'],['unready','target_not_ready']]);
+    const result = JSON.parse(rows.find(r=>r.phase==='enqueue_result').detail);
+    assert.equal(result.inserted,0);
+    assert.equal(result.blockers[0].id,'old');
+    assert.ok(rows.every(r=>r.correlation_id==='cron-example'));
+    assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM iperf_jobs').get().n,1);
+  } finally { sqlite.close(); }
+});

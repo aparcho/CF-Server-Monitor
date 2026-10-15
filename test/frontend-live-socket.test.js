@@ -35,6 +35,8 @@ class FakeWebSocket {
 
 test('frontend WebSocket closes at its lifetime limit without reconnecting', async () => {
   const vite = await createServer({
+    // 此测试只加载 JS 模块，不加载会安装系统证书的开发服务器配置。
+    configFile: false,
     appType: 'custom',
     logLevel: 'silent',
     server: { middlewareMode: true }

@@ -493,7 +493,7 @@ export default {
     const minute = now.getUTCMinutes();
     
     if (cron === '*/1 * * * *') {
-      await enqueueDueIperfJobs(env.DB, now.getTime());
+      await enqueueDueIperfJobs(env.DB, now.getTime(), {cron,scheduledTime:event.scheduledTime});
       if (day === 0 && hour === 0 && minute < 5) {
         debug('[Cron] 每周日0:00-0:05表轮换期间，跳过离线节点检测');
       } else {

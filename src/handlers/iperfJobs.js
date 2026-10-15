@@ -92,21 +92,41 @@ export async function handleIperfAdminAction(data, env) {
   return createBadRequestResponse('unknownIperfAction');
 }
 
-export async function enqueueDueIperfJobs(db, now = Date.now()) {
+export async function enqueueDueIperfJobs(db, now = Date.now(), event = {}) {
   await ensureIperfJobTables(db);
   const local = new Date(now + BEIJING_OFFSET);
   const date = local.toISOString().slice(0, 10);
   const time = local.toISOString().slice(11, 16);
-  const schedules = await db.prepare(`SELECT s.* FROM iperf_schedules s JOIN servers v ON v.id=s.server_id
-    JOIN iperf_targets t ON t.server_id=s.server_id
-    WHERE s.enabled=1 AND (s.time_beijing=? OR s.time_beijing_day=? OR s.time_beijing_extra=?) AND t.last_seen>?`).bind(time, time, time, now - 5 * 60_000).all();
-  for (const schedule of schedules.results || []) {
+  // 诊断记录保留实际筛选使用的同一份快照，不改变当前分钟匹配规则。
+  const snapshot = (await db.prepare(`SELECT s.*,t.last_seen AS target_last_seen FROM iperf_schedules s
+    JOIN servers v ON v.id=s.server_id LEFT JOIN iperf_targets t ON t.server_id=s.server_id
+    WHERE s.enabled=1`).all()).results || [];
+  const schedules = snapshot.filter(s => [s.time_beijing,s.time_beijing_day,s.time_beijing_extra].includes(time)
+    && s.target_last_seen > now - 5 * 60_000);
+  await db.prepare(`CREATE TABLE IF NOT EXISTS iperf_dispatch_audit (
+    id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL, scheduled_at INTEGER, cron TEXT,
+    matched_minute TEXT NOT NULL, snapshot TEXT NOT NULL, enqueued INTEGER NOT NULL DEFAULT 0, error TEXT
+  )`).run();
+  const auditId = crypto.randomUUID();
+  await db.prepare(`INSERT INTO iperf_dispatch_audit (id,observed_at,scheduled_at,cron,matched_minute,snapshot)
+    VALUES (?,?,?,?,?,?)`).bind(auditId,now,event.scheduledTime ?? null,event.cron || '',`${date}T${time}+08:00`,
+      JSON.stringify(snapshot.map(s => ({server_id:s.server_id,updated_at:s.updated_at,times:[s.time_beijing_day,s.time_beijing,s.time_beijing_extra],target_last_seen:s.target_last_seen,
+        due:[s.time_beijing,s.time_beijing_day,s.time_beijing_extra].includes(time),ready:s.target_last_seen > now-5*60_000})))).run();
+  let enqueued = 0;
+  try { for (const schedule of schedules) {
     const slot = `${date}T${time}+08:00`;
-    await db.prepare(`INSERT OR IGNORE INTO iperf_jobs
+    const result = await db.prepare(`INSERT OR IGNORE INTO iperf_jobs
       (id,server_id,source,status,duration_seconds,scheduled_slot,created_at)
       VALUES (?,?,?,'queued',?,?,?)`).bind(crypto.randomUUID(), schedule.server_id,
       'scheduled', schedule.duration_seconds, slot, now).run();
+    enqueued += result.meta?.changes || 0;
+  } } catch (error) {
+    await db.prepare('UPDATE iperf_dispatch_audit SET error=? WHERE id=?').bind(String(error.message || error).slice(0,300),auditId).run();
+    throw error;
+  } finally {
+    await db.prepare('UPDATE iperf_dispatch_audit SET enqueued=? WHERE id=?').bind(enqueued,auditId).run();
   }
+  await db.prepare('DELETE FROM iperf_dispatch_audit WHERE observed_at<?').bind(now-2*86400_000).run();
 }
 
 function runnerAuthorized(request, env) {

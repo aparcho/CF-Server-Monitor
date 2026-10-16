@@ -86,3 +86,36 @@ test('自动接入失败显示原因且不启用定时，重新安装保留已�
     assert.equal((await node({})).status, 401);
   } finally { sqlite.close(); }
 });
+
+test('领取响应丢失后按同一编号取回同一任务，完成回执可重复提交',async()=>{
+ const {sqlite,env}=setup();try {
+  const id=crypto.randomUUID(),other=crypto.randomUUID(),key=crypto.randomUUID();
+  sqlite.exec("CREATE TABLE iperf_jobs(id TEXT PRIMARY KEY,server_id TEXT,source TEXT,status TEXT,duration_seconds INTEGER,scheduled_slot TEXT,created_at INTEGER,started_at INTEGER,finished_at INTEGER,error TEXT,result_count INTEGER)");
+  sqlite.prepare("INSERT INTO iperf_jobs(id,server_id,source,status,duration_seconds,created_at) VALUES (?,?,'manual','queued',5,?)").run(id,'new',Date.now()-10);
+  sqlite.prepare("INSERT INTO iperf_jobs(id,server_id,source,status,duration_seconds,created_at) VALUES (?,?,'manual','queued',5,?)").run(other,'other',Date.now());
+  const a=await(await handleIperfClaim(runner({request_id:key}),env)).json();
+  const b=await(await handleIperfClaim(runner({request_id:key}),env)).json();
+  assert.equal(a.id,id);assert.equal(b.id,id);
+  assert.equal(sqlite.prepare('SELECT status FROM iperf_jobs WHERE id=?').get(other).status,'queued');
+  const payload={id,status:'completed',result_count:0,error:null};
+  assert.equal((await handleIperfFinish(runner(payload),env)).status,200);
+  const repeated=await(await handleIperfFinish(runner(payload),env)).json();assert.equal(repeated.already_applied,true);
+  assert.equal((await(await handleIperfClaim(runner({request_id:key}),env)).json()).status,'completed');
+ }finally{sqlite.close()}
+});
+
+test('旧领取丢失仅恢复未执行任务；租约过期的完成补报要求完整结果和清理确认',async()=>{
+ const {sqlite,env}=setup();try {
+  await handleIperfClaim(runner({}),env);
+  const id=crypto.randomUUID(),key=crypto.randomUUID(),start=Date.now()-25*60000;
+  sqlite.prepare("INSERT INTO iperf_jobs(id,server_id,source,status,duration_seconds,created_at,started_at) VALUES (?,'new','scheduled','running',5,?,?)").run(id,start,start);
+  const recovered=await(await handleIperfClaim(runner({request_id:key,recover_job_id:id}),env)).json();assert.equal(recovered.id,id);
+  sqlite.prepare("UPDATE iperf_jobs SET status='failed',finished_at=?,error='runner lease expired' WHERE id=?").run(Date.now(),id);
+  const body={id,status:'completed',result_count:4,error:null,cleanup_confirmed:true};
+  assert.equal((await handleIperfFinish(runner(body),env)).status,400);
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS iperf_results(run_id TEXT,server_id TEXT,source TEXT,family TEXT,direction TEXT,tested_at INTEGER,duration_seconds INTEGER,port INTEGER,status TEXT,mbps REAL,retransmits INTEGER,error TEXT,PRIMARY KEY(run_id,server_id,family,direction))`);
+  for(const family of ['ipv4','ipv6'])for(const direction of ['download','upload'])sqlite.prepare("INSERT INTO iperf_results VALUES ('run','new','deb',?,?,?,5,5202,'ok',100,0,NULL)").run(family,direction,sqlite.prepare('SELECT started_at FROM iperf_jobs WHERE id=?').get(id).started_at);
+  assert.equal((await handleIperfFinish(runner({...body,cleanup_confirmed:false}),env)).status,400);
+  assert.equal((await handleIperfFinish(runner(body),env)).status,200);
+ }finally{sqlite.close()}
+});

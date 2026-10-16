@@ -21,7 +21,7 @@ export async function deleteServers(db, ids) {
   const names=new Set(tables.map(t=>t.name));
   // D1 的 _cf_KV 等内部表不允许读取表结构；只处理项目明确拥有的节点数据表。
   const owned=['metrics_history','metrics_history_old','iperf_results','iperf_jobs',
-    'iperf_schedules','iperf_targets','iperf_enrollments','iperf_listeners',
+    'iperf_claim_requests','iperf_schedules','iperf_targets','iperf_enrollments','iperf_listeners',
     'netwatch_nodes','netwatch_samples'].filter(name=>names.has(name));
   const statements=[];
   for(const id of ids) {

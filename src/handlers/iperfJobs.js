@@ -1,8 +1,8 @@
 import { deletedServerIds } from '../utils/deleteServers.js';
 import { iperfAudit } from '../utils/iperfAudit.js';
-import { getIperfJobResults } from './iperf.js';
+import { getIperfJobResults, ensureIperfResultsTable } from './iperf.js';
 import { createBadRequestResponse, createSuccessResponse, createUnauthorizedResponse } from '../utils/errors.js';
-import { finishIperfAutoCheck, getIperfAutoTarget, listIperfEnrollments, retryIperfEnrollment } from './iperfAuto.js';
+import { ensureAutoTables, finishIperfAutoCheck, getIperfAutoTarget, listIperfEnrollments, retryIperfEnrollment } from './iperfAuto.js';
 
 const SERVER_ID = /^[a-zA-Z0-9._:-]{1,100}$/;
 const BEIJING_OFFSET = 8 * 3600_000;
@@ -14,6 +14,7 @@ export async function ensureIperfJobTables(db) {
     created_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER,
     error TEXT, result_count INTEGER
   )`).run();
+  await db.prepare(`CREATE TABLE IF NOT EXISTS iperf_claim_requests (request_id TEXT PRIMARY KEY,job_id TEXT UNIQUE NOT NULL,server_id TEXT NOT NULL,created_at INTEGER NOT NULL)`).run();
   await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_iperf_job_slot ON iperf_jobs(server_id, scheduled_slot) WHERE scheduled_slot IS NOT NULL').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_iperf_job_status ON iperf_jobs(status, created_at)').run();
   await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_iperf_one_active ON iperf_jobs(server_id) WHERE status IN ('queued','running')").run();
@@ -179,12 +180,43 @@ export async function handleIperfClaim(request, env) {
   const now = Date.now();
   await env.DB.prepare("UPDATE iperf_jobs SET status='failed',finished_at=?,error='runner lease expired' WHERE status='running' AND started_at<?")
     .bind(now, now - 20 * 60_000).run();
-  const candidate = await env.DB.prepare("SELECT id FROM iperf_jobs WHERE status='queued' ORDER BY created_at LIMIT 1").first();
-  if (!candidate) { await iperfAudit(env.DB, 'claim_empty'); return createSuccessResponse(null); }
-  const claimed = await env.DB.prepare("UPDATE iperf_jobs SET status='running',started_at=? WHERE id=? AND status='queued'")
-    .bind(now, candidate.id).run();
-  if (!claimed.meta?.changes) return createSuccessResponse(null);
-  const job = await env.DB.prepare('SELECT id,server_id,duration_seconds,source FROM iperf_jobs WHERE id=?').bind(candidate.id).first();
+  const body=await request.json().catch(()=>({}));
+  const requestId=body?.request_id;
+  if(requestId!==undefined&&!/^[a-f0-9-]{36}$/.test(requestId))return createBadRequestResponse('invalidClaimRequest');
+  let job;
+  if(requestId) {
+    if(body.recover_job_id) {
+      await ensureIperfResultsTable(env.DB);
+      await ensureAutoTables(env.DB);
+      if(!/^[a-f0-9-]{36}$/.test(body.recover_job_id))return createBadRequestResponse('invalidRecovery');
+      // 仅恢复无任何结果、无监听会话且没有新领取凭据的旧任务；不重测已有结果。
+      await env.DB.prepare(`INSERT OR IGNORE INTO iperf_claim_requests
+        SELECT ?,j.id,j.server_id,? FROM iperf_jobs j
+        WHERE j.id=? AND (j.status='running' OR (j.status='failed' AND j.error='runner lease expired'))
+        AND j.started_at<? AND NOT EXISTS(SELECT 1 FROM iperf_results r WHERE r.server_id=j.server_id AND r.tested_at>=j.started_at AND r.tested_at<=COALESCE(j.finished_at,?))
+        AND NOT EXISTS(SELECT 1 FROM iperf_listeners l WHERE l.job_id=j.id)
+        AND EXISTS(SELECT 1 FROM servers v WHERE v.id=j.server_id)
+        AND NOT EXISTS(SELECT 1 FROM iperf_jobs other WHERE other.server_id=j.server_id AND other.id!=j.id AND other.status IN ('queued','running'))`)
+        .bind(requestId,now,body.recover_job_id,now-60000,now).run();
+      await env.DB.prepare(`UPDATE iperf_jobs SET status='queued',error=NULL,finished_at=NULL WHERE id=(SELECT job_id FROM iperf_claim_requests WHERE request_id=?) AND status='failed' AND error='runner lease expired'`).bind(requestId).run();
+    } else {
+      await env.DB.prepare(`INSERT OR IGNORE INTO iperf_claim_requests
+        SELECT ?,id,server_id,? FROM iperf_jobs WHERE status='queued'
+        AND NOT EXISTS(SELECT 1 FROM iperf_claim_requests c WHERE c.job_id=iperf_jobs.id)
+        AND NOT EXISTS(SELECT 1 FROM iperf_claim_requests WHERE request_id=?) ORDER BY created_at,id LIMIT 1`)
+        .bind(requestId,now,requestId).run();
+    }
+    await env.DB.prepare(`UPDATE iperf_jobs SET status='running',started_at=? WHERE status='queued'
+      AND id=(SELECT job_id FROM iperf_claim_requests WHERE request_id=?)`).bind(now,requestId).run();
+    job=await env.DB.prepare(`SELECT j.id,j.server_id,j.duration_seconds,j.source,j.status FROM iperf_jobs j JOIN iperf_claim_requests c ON c.job_id=j.id WHERE c.request_id=?`).bind(requestId).first();
+    if(!job) {await iperfAudit(env.DB,'claim_empty');return createSuccessResponse(null);}
+  } else {
+    const candidate=await env.DB.prepare("SELECT id FROM iperf_jobs WHERE status='queued' ORDER BY created_at LIMIT 1").first();
+    if(!candidate){await iperfAudit(env.DB,'claim_empty');return createSuccessResponse(null);}
+    const claimed=await env.DB.prepare("UPDATE iperf_jobs SET status='running',started_at=? WHERE id=? AND status='queued'").bind(now,candidate.id).run();
+    if(!claimed.meta?.changes)return createSuccessResponse(null);
+    job=await env.DB.prepare('SELECT id,server_id,duration_seconds,source,status FROM iperf_jobs WHERE id=?').bind(candidate.id).first();
+  }
   await iperfAudit(env.DB, 'job_claimed', { job_id: job.id, server_id: job.server_id, source: job.source });
   job.auto_target = await getIperfAutoTarget(env.DB, job.server_id);
   return createSuccessResponse(job);
@@ -198,10 +230,20 @@ export async function handleIperfFinish(request, env) {
       !['completed', 'failed'].includes(body.status) ||
       !Number.isInteger(body.result_count) || body.result_count < 0 || body.result_count > 4) return createBadRequestResponse('invalidIperfCompletion');
   await ensureIperfJobTables(env.DB);
-  const job = await env.DB.prepare('SELECT id,server_id,source,scheduled_slot FROM iperf_jobs WHERE id=?').bind(body.id).first();
-  const result = await env.DB.prepare("UPDATE iperf_jobs SET status=?,finished_at=?,error=?,result_count=? WHERE id=? AND status='running'")
+  const job = await env.DB.prepare('SELECT * FROM iperf_jobs WHERE id=?').bind(body.id).first();
+  if(!job)return createSuccessResponse({success:true,discarded:true,reason:'jobDeleted'});
+  if(job.status===body.status && job.result_count===body.result_count && (job.error||null)===(body.error||null)) {
+    await finishIperfAutoCheck(env.DB,job,body.status,body.error);
+    return createSuccessResponse({success:true,already_applied:true});
+  }
+  const late=job?.status==='failed'&&job.error==='runner lease expired'&&body.status==='completed'&&body.cleanup_confirmed===true;
+  if(late) {
+    const rows=(await getIperfJobResults(env.DB)).get(body.id)||[];
+    if(body.result_count<1||rows.length!==body.result_count)return createBadRequestResponse('completionEvidenceMismatch');
+  }
+  const result = await env.DB.prepare(`UPDATE iperf_jobs SET status=?,finished_at=?,error=?,result_count=? WHERE id=? AND (status='running' OR (?=1 AND status='failed' AND error='runner lease expired'))`)
     .bind(body.status, Date.now(), typeof body.error === 'string' ? body.error.slice(0, 200) : null,
-      body.result_count, body.id).run();
+      body.result_count, body.id,late?1:0).run();
   await iperfAudit(env.DB, 'job_finish', { job_id: body.id, server_id: job?.server_id ?? null, status: body.status, result_count: body.result_count, applied: result.meta?.changes || 0, error: typeof body.error === 'string' ? body.error.slice(0,200) : null });
   if (!result.meta?.changes) return createBadRequestResponse('iperfJobNotRunning');
   await finishIperfAutoCheck(env.DB, job, body.status, typeof body.error === 'string' ? body.error.slice(0, 200) : null);

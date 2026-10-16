@@ -12,6 +12,7 @@ import sys
 import tempfile
 import socket
 import time
+import uuid
 
 
 def audit(phase, **detail):
@@ -32,27 +33,73 @@ def audit(phase, **detail):
         print(f'runner audit write failed: {exc}', file=sys.stderr, flush=True)
 
 
-def api(base, token, path, payload):
+class ApiFailure(RuntimeError):
+    def __init__(self,message,retryable=True):
+        super().__init__(message);self.retryable=retryable
+
+
+def api_once(base, token, path, payload, family='--ipv6', attempt=1):
     started = time.monotonic()
-    audit('api_begin', path=path, job_id=payload.get('id'))
+    audit('api_begin', path=path, job_id=payload.get('id'), family=family, attempt=attempt)
     if any(char in token for char in '\r\n"\\'):
         raise ValueError('invalid token format')
     with tempfile.NamedTemporaryFile(mode='w', prefix='.cfsm-curl-', dir='/root/.config/cfsm') as options:
         options.write(f'header = "X-Iperf-Token: {token}"\n')
         options.flush()
-        result = subprocess.run(['curl', '--silent', '--show-error', '--fail-with-body', '--ipv6',
+        result = subprocess.run(['curl', '--silent', '--show-error', '--fail-with-body', family,
             '--connect-timeout', '10', '--max-time', '30', '--config', options.name,
             '--header', 'Content-Type: application/json', '--header', 'User-Agent: CFSM-Iperf/1.0',
-            '--data-binary', '@-', base.rstrip('/') + path], input=json.dumps(payload),
+            '--write-out', '\n%{http_code}', '--data-binary', '@-', base.rstrip('/') + path], input=json.dumps(payload),
             text=True, capture_output=True, timeout=35)
+    body,_,status=result.stdout.rpartition('\n')
+    http_status=int(status) if status.isdigit() else 0
     if result.returncode:
         audit('api_error', path=path, job_id=payload.get('id'), returncode=result.returncode,
+              http_status=http_status,family=family,attempt=attempt,
               elapsed_ms=round((time.monotonic() - started) * 1000))
-        raise RuntimeError((result.stderr or result.stdout).strip()[:200] or 'Worker request failed')
-    response = json.loads(result.stdout)
-    audit('api_complete', path=path, job_id=payload.get('id'),
+        raise ApiFailure((result.stderr.strip()[:180] or 'Worker request failed')+f' (HTTP {http_status})',
+                         http_status in (0,408,429) or http_status>=500)
+    try: response=json.loads(body)
+    except ValueError: raise ApiFailure(f'Worker returned non-JSON response (HTTP {http_status})') from None
+    audit('api_complete', path=path, job_id=payload.get('id'),family=family,attempt=attempt,
           elapsed_ms=round((time.monotonic() - started) * 1000))
     return response
+
+
+def api(base,token,path,payload):
+    for attempt,family in enumerate(('--ipv6','--ipv4','--ipv6'),1):
+        try:return api_once(base,token,path,payload,family,attempt)
+        except (ApiFailure,subprocess.TimeoutExpired) as exc:
+            if attempt==3 or isinstance(exc,ApiFailure) and not exc.retryable:raise
+            audit('api_retry',path=path,job_id=payload.get('id'),attempt=attempt)
+            time.sleep(attempt)
+
+
+def write_receipt(path,data):
+    path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+    temp=path.with_suffix('.tmp')
+    with os.fdopen(os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600),'w') as stream:
+        json.dump(data,stream);stream.flush();os.fsync(stream.fileno())
+    temp.replace(path)
+
+
+def flush_completions(base,token,state_dir):
+    for path in sorted((state_dir/'pending-finish').glob('*.json')):
+        payload=json.loads(path.read_text())
+        response=api(base,token,'/api/iperf/jobs/finish',payload)
+        if response.get('success') is not True:raise RuntimeError('completion acknowledgement missing')
+        path.unlink();audit('completion_acknowledged',job_id=payload['id'],status=payload['status'])
+
+
+def claim_job(base,token,state_dir):
+    path=state_dir/'claim-request.json'
+    if not path.exists():write_receipt(path,{'request_id':str(uuid.uuid4())})
+    payload=json.loads(path.read_text())
+    job=api(base,token,'/api/iperf/jobs/claim',payload)
+    path.unlink()
+    if job and job.get('status') not in (None,'running'):
+        audit('claim_already_terminal',job_id=job['id'],status=job.get('status'));return None
+    return job
 
 
 def remote(host, script, timeout=20, identity_file=None):
@@ -185,11 +232,14 @@ def main():
     parser.add_argument('config', help='local allowlist JSON with worker_url and targets')
     parser.add_argument('--token-file', default='/root/.config/cfsm/iperf-token')
     parser.add_argument('--output', default='/root/cfsm-iperf-results')
+    parser.add_argument('--state-dir',default='/root/cfsm-iperf-state')
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
     token = Path(args.token_file).read_text().strip()
     if not token:
         raise ValueError('empty token file')
+    state_dir=Path(args.state_dir)
+    flush_completions(config['worker_url'],token,state_dir)
     refresh = api(config['worker_url'], token, '/api/iperf/targets',
         {'server_ids': [target['id'] for target in config['targets']]})
     deleted = set(refresh.get('deleted_ids', []))
@@ -199,7 +249,7 @@ def main():
         temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2))
         temporary.chmod(0o600); temporary.replace(path)
         audit('deleted_targets_removed', server_ids=sorted(deleted))
-    job = api(config['worker_url'], token, '/api/iperf/jobs/claim', {})
+    job = claim_job(config['worker_url'],token,state_dir)
     if not job:
         audit('claim_empty')
         print('no queued job')
@@ -255,9 +305,10 @@ def main():
                     target.get('listener_mode') == 'ufw-source')
             except Exception as exc:
                 error = (error + '; ' if error else '') + f'cleanup: {exc}'
-        api(config['worker_url'], token, '/api/iperf/jobs/finish', {
-            'id': job['id'], 'status': 'failed' if error else 'completed',
-            'result_count': count, 'error': error})
+        completion={'id':job['id'],'status':'failed' if error else 'completed',
+                    'result_count':count,'error':error,'cleanup_confirmed':not bool(error)}
+        write_receipt(state_dir/'pending-finish'/(job['id']+'.json'),completion)
+        flush_completions(config['worker_url'],token,state_dir)
     if error:
         audit('job_failed', job_id=job['id'], error=error)
         raise RuntimeError(error)

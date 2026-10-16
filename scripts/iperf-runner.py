@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Claim CFSM iperf jobs on deb and run only locally allowlisted targets."""
 import argparse
+import fcntl
 import ipaddress
 import json
 import os
@@ -259,7 +260,14 @@ def main():
 
 if __name__ == '__main__':
     try:
-        main()
+        # 与轻量监控共用锁，避免抢占 5202。原任务激活后，监控不再争锁。
+        with open('/run/lock/cfsm-iperf-shared.lock', 'a') as measurement_lock:
+            try:
+                fcntl.flock(measurement_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                audit('waiting_for_netwatch')
+                fcntl.flock(measurement_lock, fcntl.LOCK_EX)
+            main()
     except Exception as exc:
         audit('runner_error', error=str(exc)[:500])
         print(f'error: {exc}', file=sys.stderr)

@@ -58,3 +58,23 @@ test('切换页面与卸载停止轮询，慢请求不重叠',async t=>{
     view.app.unmount();t.mock.timers.tick(10000);await flush();assert.equal(calls,3);
   }finally{view.app.unmount();delete globalThis.__iperfPanelTestApi}
 });
+
+
+test('最近任务每页5条，翻页不影响后台测速轮询，刷新后收缩页码',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  let count=12;
+  globalThis.__iperfPanelTestApi=async()=>({data:{jobs:Array.from({length:count},(_,i)=>({id:'job-'+i,server_id:'a',status:i===0?'running':'completed'}))}});
+  const view=mount();
+  try {
+    await flush();assert.equal(view.state().jobPage,1);
+    assert.deepEqual(view.state().pagedJobs.map(j=>j.id),['job-0','job-1','job-2','job-3','job-4']);
+    assert.equal(view.state().jobPages,3);
+    view.state().jobPage=3;await flush();assert.equal(view.state().pagedJobs.length,2);
+    t.mock.timers.tick(5000);await flush();
+    assert.equal(view.state().jobPage,3);assert.equal(view.state().pagedJobs[0].id,'job-10');
+    count=6;t.mock.timers.tick(5000);await flush();
+    assert.equal(view.state().jobPage,2);assert.equal(view.state().pagedJobs.length,1);
+    view.props.selectedApiIndex=1;await flush();assert.equal(view.state().jobPage,1);
+    count=0;await view.state().load();await flush();assert.equal(view.state().jobPages,1);assert.equal(view.state().pagedJobs.length,0);
+  } finally {view.app.unmount();delete globalThis.__iperfPanelTestApi}
+});

@@ -37,7 +37,7 @@
     <h4>最近任务</h4>
     <p class="iperf-result-hint">下载、上传均以 deb 为视角；单位 Mbps，括号内为 TCP 重传次数。</p>
     <div class="iperf-table-wrap"><table class="iperf-table"><thead><tr><th>节点</th><th>来源</th><th>状态</th><th>创建时间</th><th>结果</th></tr></thead>
-      <tbody><tr v-for="job in jobs" :key="job.id">
+      <tbody><tr v-for="job in pagedJobs" :key="job.id">
         <td>{{ serverName(job.server_id) }}</td>
         <td>{{ job.source === 'onboarding' ? '自动接入检查' : job.source === 'scheduled' ? '定时' : '手动' }}</td>
         <td class="iperf-job-status">{{ statusName(job.status) }}</td>
@@ -53,16 +53,28 @@
         </td>
       </tr></tbody>
     </table></div>
+    <nav class="iperf-pagination" aria-label="最近任务分页">
+      <span>共 {{ jobs.length }} 条 · 每页 {{ jobPageSize }} 条</span>
+      <button v-if="jobPage > 1" class="btn" @click="jobPage = 1">最新任务</button>
+      <button class="btn" :disabled="jobPage <= 1" @click="jobPage--">上一页</button>
+      <span>第 {{ jobPage }} / {{ jobPages }} 页</span>
+      <button class="btn" :disabled="jobPage >= jobPages" @click="jobPage++">下一页</button>
+    </nav>
   </div>
 </template>
 
 <script setup>
-import { onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import NetwatchPanel from './NetwatchPanel.vue'
 import { adminApi } from '../../../utils/api'
 
 const props = defineProps({ activeTab: String, servers: { type: Array, default: () => [] }, selectedApiIndex: Number })
 const jobs = ref([])
+const jobPageSize = 5
+const jobPage = ref(1)
+const jobPages = computed(() => Math.max(1, Math.ceil(jobs.value.length / jobPageSize)))
+const pagedJobs = computed(() => jobs.value.slice((jobPage.value - 1) * jobPageSize, jobPage.value * jobPageSize))
+watch(jobPages, pages => { jobPage.value = Math.min(jobPage.value, pages) })
 const readyTargets = ref([])
 const enrollments = ref([])
 const enrollment = (id) => enrollments.value.find(row => row.server_id === id)
@@ -138,6 +150,7 @@ async function load(options = {}) {
 async function trigger(id) {
   const data = await call({ action: 'iperf_trigger', server_id: id, duration_seconds: form(id).duration_seconds })
   if (data) {
+    jobPage.value = 1
     jobs.value = [{ id: data.id, server_id: id, source: 'manual', status: 'queued', created_at: Date.now() }, ...jobs.value]
     message.value = '任务已排队，deb 将在下一次轮询时执行。'
     await load()
@@ -158,6 +171,7 @@ async function save(id) {
 }
 watch(() => [props.activeTab, props.selectedApiIndex], ([tab]) => {
   ++loadSequence
+  jobPage.value = 1
   stopPolling()
   if (tab === 'iperf') load()
 }, { immediate: true })
@@ -180,5 +194,7 @@ onBeforeUnmount(() => { disposed = true; ++loadSequence; stopPolling() })
 .iperf-result-family { display: grid; grid-template-columns: 44px minmax(145px, 1fr) minmax(145px, 1fr); gap: 8px; line-height: 1.7; white-space: nowrap; }
 .iperf-family-label, .iperf-result-hint { opacity: .7; }
 .iperf-result-hint { font-size: 12px; }
+.iperf-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; font-size: 12px; }
+.iperf-pagination > span { opacity: .7; }
 .iperf-job-error { margin-top: 4px; overflow-wrap: anywhere; }
 </style>

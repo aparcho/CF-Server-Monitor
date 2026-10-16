@@ -84,6 +84,7 @@ def validate(config):
     if not config.get('nodes'):
         raise ValueError('nodes is empty')
     for node in config['nodes']:
+        node.setdefault('watch_enabled',False)
         if not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', node['name']) or node['name'] in names:
             raise ValueError('invalid or duplicate node name')
         names.add(node['name'])
@@ -470,6 +471,7 @@ def sync_monitor(db,config):
         temporary.chmod(0o600);temporary.replace(path)
         event(db,'deb',0,'monitor_config_applied','已应用 monitor 后台的逐台启停、频率与预算；iperf 防火墙能力不变')
     set_state(db,'last_upload',time.time())
+    return bool(batch and db.execute('SELECT 1 FROM samples WHERE id>? LIMIT 1',(batch[-1]['id'],)).fetchone())
 
 
 def daemon(config,once=False,quality_only=False):
@@ -490,10 +492,11 @@ def daemon(config,once=False,quality_only=False):
             if now-last_prune>3600:
                 prune(db,config); last_prune=now
             if now-last_sync>=60:
-                try:sync_monitor(db,config)
+                pending_upload=False
+                try:pending_upload=sync_monitor(db,config)
                 except Exception as exc:
                     event(db,'deb',0,'monitor_upload_failed',type(exc).__name__+'；本地结果保留，稍后补传')
-                last_sync=now
+                last_sync=now-55 if pending_upload else now
             did=False
             if not quality_only:
                 paths=[]

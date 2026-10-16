@@ -30,6 +30,7 @@
       "tcp_port": 443,
       "management_host": "root@你的管理地址",
       "iperf_enabled": false,
+      "watch_enabled": false,
       "daily_budget_mib": 512,
       "disabled_reason": "填写真实公网地址、管理入口并确认已有5202放行后再启用"
     }

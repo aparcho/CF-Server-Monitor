@@ -10,6 +10,8 @@ export async function ensureNetwatch(db) {
     db.prepare(`CREATE TABLE IF NOT EXISTS netwatch_samples(id TEXT PRIMARY KEY,server_id TEXT NOT NULL,
       tested_at INTEGER NOT NULL,kind TEXT NOT NULL,family TEXT NOT NULL,direction TEXT NOT NULL,status TEXT NOT NULL,data TEXT NOT NULL)`),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_netwatch_time ON netwatch_samples(server_id,tested_at)'),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_netwatch_retention ON netwatch_samples(tested_at)'),
+    db.prepare('CREATE TABLE IF NOT EXISTS netwatch_meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL)'),
     db.prepare(`CREATE TABLE IF NOT EXISTS netwatch_nodes(server_id TEXT PRIMARY KEY,enabled INTEGER NOT NULL,
       iperf_capable INTEGER NOT NULL,reason TEXT,interval_seconds INTEGER NOT NULL DEFAULT 300,
       daily_budget_mib INTEGER NOT NULL DEFAULT 512,last_seen INTEGER NOT NULL,budget_day TEXT,
@@ -63,7 +65,9 @@ export async function handleNetwatchReport(request,env) {
   if(statements.length)await env.DB.batch(statements);
   const settings=(await env.DB.prepare('SELECT server_id,enabled,interval_seconds,daily_budget_mib FROM netwatch_nodes').all()).results;
   // 每小时最多一次清理，避免每个上报批次扫描历史。
-  if(now%HOUR<60000)await env.DB.prepare('DELETE FROM netwatch_samples WHERE tested_at<?').bind(now-30*24*HOUR).run();
+  const cleanup=await env.DB.prepare(`INSERT INTO netwatch_meta VALUES ('cleanup_hour',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<excluded.value`).bind(Math.floor(now/HOUR)).run();
+  if(cleanup.meta?.changes)await env.DB.prepare('DELETE FROM netwatch_samples WHERE tested_at<?').bind(now-30*24*HOUR).run();
   return createSuccessResponse({success:true,accepted:body.samples.length,settings});
 }
 const decode=r=>({...r,data:JSON.parse(r.data)});

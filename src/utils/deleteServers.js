@@ -19,12 +19,10 @@ export async function deleteServers(db, ids) {
   await ensureDeletedServers(db);
   const tables=(await db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all()).results;
   const names=new Set(tables.map(t=>t.name));
-  const owned=[];
-  for(const {name} of tables) {
-    if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name))continue;
-    const columns=(await db.prepare(`PRAGMA table_info("${name}")`).all()).results;
-    if(columns.some(c=>c.name==='server_id'))owned.push(name);
-  }
+  // D1 的 _cf_KV 等内部表不允许读取表结构；只处理项目明确拥有的节点数据表。
+  const owned=['metrics_history','metrics_history_old','iperf_results','iperf_jobs',
+    'iperf_schedules','iperf_targets','iperf_enrollments','iperf_listeners',
+    'netwatch_nodes','netwatch_samples'].filter(name=>names.has(name));
   const statements=[];
   for(const id of ids) {
     // CHECK 约束使整个 batch 回滚；测速尚在运行时保留其清理所需的登记与会话。

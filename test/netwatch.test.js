@@ -15,6 +15,8 @@ test('缺少标识和非法速率拒绝，缺少重传保留未知不补零',()=
 test('删除节点原子清理测速与历史，deb 刷新自动移除已删目标，迟到上报不能复活',async()=>{
  const {raw,db}=database();try {
   const env={DB:db,IPERF_REPORT_TOKEN:'test'};
+  raw.exec("CREATE TABLE _cf_KV(server_id TEXT); INSERT INTO _cf_KV VALUES ('one')");
+  const prepare=db.prepare; db.prepare=(sql)=>{if(/PRAGMA.*_cf_KV/i.test(sql))throw new Error('D1_ERROR: not authorized: SQLITE_AUTH');return prepare(sql)};
   await handleNetwatchReport(request({samples:[sample()],nodes:[]}),env);
   await handleIperfTargets(request({server_ids:['one','two']}),env);
   raw.exec("CREATE TABLE metrics_history(server_id TEXT,value TEXT); INSERT INTO metrics_history VALUES ('one','a'),('two','b'); INSERT INTO iperf_schedules(server_id,updated_at) VALUES ('one',1),('two',1); INSERT INTO iperf_jobs(id,server_id,source,status,duration_seconds,created_at) VALUES ('job','one','manual','running',5,1)");
@@ -23,6 +25,7 @@ test('删除节点原子清理测速与历史，deb 刷新自动移除已删目�
   assert.equal(raw.prepare('SELECT COUNT(*) n FROM deleted_servers').get().n,0);
   raw.exec("UPDATE iperf_jobs SET status='completed'");
   await deleteServers(db,['one']);
+  assert.equal(raw.prepare('SELECT COUNT(*) n FROM _cf_KV').get().n,1);
   for(const table of ['iperf_jobs','iperf_targets','iperf_schedules','netwatch_samples','metrics_history'])
     assert.equal(raw.prepare(`SELECT COUNT(*) n FROM ${table} WHERE server_id='one'`).get().n,0);
   assert.equal(raw.prepare("SELECT COUNT(*) n FROM metrics_history WHERE server_id='two'").get().n,1);

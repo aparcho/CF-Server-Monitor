@@ -15,7 +15,6 @@ import { isValidTrafficCorrection, normalizeConnectionMode, normalizePingMode, n
 import { scheduleAgentConfigChanged, scheduleAgentReportModeChanged } from '../utils/agentConfigNotify.js';
 import { detectBillingCycle, detectCurrencySymbol, normalizeBillingCycle, normalizeCurrency, normalizePrice, renewExpireDateIfNeeded } from '../utils/serverBilling.js';
 import { THEME_PREVIEW_AUTH_TTL_SECONDS } from '../utils/config.js';
-import { handleNetwatchAdmin } from './netwatch.js';
 import { handleIperfAdminAction } from './iperfJobs.js';
 
 const PING_NODE_FIELDS = ['custom_ct', 'custom_cu', 'custom_cm', 'custom_bd', 'node_1', 'node_2', 'node_3', 'node_4'];
@@ -720,8 +719,6 @@ async function handleSendTestNotificationAction({ data }) {
 }
 
 const AUTHENTICATED_ADMIN_ACTION_HANDLERS = {
-  netwatch_list: ({ data, env }) => handleNetwatchAdmin(data, env),
-  netwatch_configure: ({ data, env }) => handleNetwatchAdmin(data, env),
   iperf_list: ({ data, env }) => handleIperfAdminAction(data, env),
   iperf_trigger: ({ data, env }) => handleIperfAdminAction(data, env),
   iperf_schedule: ({ data, env }) => handleIperfAdminAction(data, env),

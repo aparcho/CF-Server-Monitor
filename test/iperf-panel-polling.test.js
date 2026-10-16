@@ -11,7 +11,6 @@ const source=await readFile(new URL('../src/frontend/views/admin/components/Iper
 const {descriptor}=parse(source);
 const compiled=compileScript(descriptor,{id:'iperf-poll-test'}).content
   .replace("from 'vue'",`from '${pathToFileURL(require.resolve('vue')).href}'`)
-  .replace("import NetwatchPanel from './NetwatchPanel.vue'",'const NetwatchPanel = {}')
   .replace("import { adminApi } from '../../../utils/api'",'const adminApi = (...args) => globalThis.__iperfPanelTestApi(...args)');
 const {default:Panel}=await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 Panel.render=()=>null;

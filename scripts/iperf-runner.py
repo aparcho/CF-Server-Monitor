@@ -267,12 +267,12 @@ def main():
 
 if __name__ == '__main__':
     try:
-        # 与轻量监控共用锁，避免抢占 5202。原任务激活后，监控不再争锁。
+        # 互斥锁防止重复执行常规测速任务。
         with open('/run/lock/cfsm-iperf-shared.lock', 'a') as measurement_lock:
             try:
                 fcntl.flock(measurement_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                audit('waiting_for_netwatch')
+                audit('waiting_for_runner')
                 fcntl.flock(measurement_lock, fcntl.LOCK_EX)
             main()
     except Exception as exc:

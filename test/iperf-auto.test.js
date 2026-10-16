@@ -15,7 +15,11 @@ function setup() {
     async first() { return sqlite.prepare(sql).get(...args) ?? null; },
     async all() { return { results: sqlite.prepare(sql).all(...args) }; },
     async run() { return { meta: { changes: sqlite.prepare(sql).run(...args).changes } }; },
-  }; } };
+  }; }, async batch(statements) {
+    sqlite.exec('BEGIN');
+    try { const rows=[]; for(const statement of statements) rows.push(await statement.run()); sqlite.exec('COMMIT'); return rows; }
+    catch(error) { sqlite.exec('ROLLBACK'); throw error; }
+  } };
   return { sqlite, env: { DB, API_SECRET: 'monitor-test', IPERF_REPORT_TOKEN: 'runner-test' } };
 }
 const request = (path, data, headers = {}) => new Request('https://monitor.example' + path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(data) });

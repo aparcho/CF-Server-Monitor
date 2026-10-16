@@ -6,6 +6,7 @@ import { serveFrontend } from './handlers/frontend.js';
 import { handleUpdate, handleWebSocketUpgrade, handleUpdateWebSocketUpgrade } from './handlers/update.js';
 import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
 import { handleTheme } from './handlers/theme.js';
+import { handleNetwatchReport, handleNetwatchResults } from './handlers/netwatch.js';
 import { handleIperfReport, handleIperfResults } from './handlers/iperf.js';
 import { handleIperfClaim, handleIperfFinish, handleIperfTargets, enqueueDueIperfJobs } from './handlers/iperfJobs.js';
 import { iperfAudit, traceIperfRequest } from './utils/iperfAudit.js';
@@ -227,6 +228,7 @@ export default {
     const bypassTurnstilePaths = [
       '/admin/api',
       '/api/ws',
+      '/api/netwatch/report',
       '/api/iperf/report',
       '/api/iperf/jobs/claim',
       '/api/iperf/jobs/finish',
@@ -289,6 +291,8 @@ export default {
       { method: 'POST', path: '/api/iperf/bootstrap', handler: () => handleIperfBootstrap(request, env) },
       { method: 'POST', path: '/api/iperf/node', handler: () => handleIperfNode(request, env) },
       { method: 'POST', path: '/api/iperf/listener', handler: () => handleIperfListener(request, env) },
+      { method: 'POST', path: '/api/netwatch/report', handler: () => handleNetwatchReport(request,env) },
+      { method: 'GET', path: '/api/netwatch/results', handler: async () => { await ensureSiteSettings(); return handleNetwatchResults(request,env,sys); } },
       { method: 'POST', path: '/api/iperf/report', handler: () => handleIperfReport(request, env) },
       { method: 'POST', path: '/api/iperf/jobs/claim', handler: () => traceIperfRequest(env.DB, '/api/iperf/jobs/claim', () => handleIperfClaim(request, env)) },
       { method: 'POST', path: '/api/iperf/jobs/finish', handler: () => traceIperfRequest(env.DB, '/api/iperf/jobs/finish', () => handleIperfFinish(request, env)) },

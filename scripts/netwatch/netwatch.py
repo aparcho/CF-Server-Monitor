@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import uuid
+import urllib.request
 
 TZ = dt.timezone(dt.timedelta(hours=8))
 DEFAULT_CONFIG = '/etc/cfsm-netwatch/config.json'
@@ -372,7 +373,7 @@ def speed(db, config, node, family, direction, kind='sentinel'):
 
 
 def quality_cycle(db,config):
-    work=[(n,f) for n in config['nodes'] for f in (4,6) if n.get(f'ipv{f}')]
+    work=[(n,f) for n in config['nodes'] for f in (4,6) if n.get(f'ipv{f}') and n.get('watch_enabled',True)]
     def perform(item):
         n,f=item
         try: return n,f,*quality(config,n,f)
@@ -421,6 +422,56 @@ def prune(db,config):
             except OSError: pass
 
 
+def sync_monitor(db,config):
+    if not config.get('worker_url'):
+        return
+    instance=state(db,'upload_instance')
+    if not instance:
+        instance=uuid.uuid4().hex;set_state(db,'upload_instance',instance)
+    cursor=state(db,'upload_cursor',0)
+    batch=db.execute('SELECT * FROM samples WHERE id>? ORDER BY id LIMIT 80',(cursor,)).fetchall()
+    by_name={n['name']:n for n in config['nodes']}
+    samples=[]
+    for row in batch:
+        node=by_name.get(row['node'])
+        if not node or not node.get('id'):continue
+        data=json.loads(row['data'])
+        safe={k:data[k] for k in ('ping_sent','ping_received','ping_ms','tcp_ms','tcp_port','mbps','retransmits','target_bps','payload_bytes','seconds','tcp_rtt_ms') if k in data}
+        if data.get('cleanup'):safe['cleanup']={k:data['cleanup'].get(k) for k in ('cleaned','port_closed')}
+        samples.append(dict(id=instance+':'+str(row['id']),server_id=node['id'],tested_at=round(row['ts']*1000),
+                            family='ipv'+str(row['family']),direction=row['direction'],kind=row['kind'],status=row['status'],data=safe))
+    day=dt.datetime.now(TZ).date().isoformat();nodes=[]
+    for n in config['nodes']:
+        reserved,payload=db.execute('SELECT COALESCE(SUM(reserved),0),COALESCE(SUM(payload),0) FROM reservations WHERE day=? AND node=?',(day,n['name'])).fetchone()
+        nodes.append(dict(server_id=n['id'],enabled=n.get('watch_enabled',True),iperf_capable=n.get('iperf_enabled',False),
+                          reason=n.get('disabled_reason',''),daily_budget_mib=n.get('daily_budget_mib',512),
+                          payload_bytes=payload,reserved_bytes=reserved,budget_day=day))
+    token=Path(config.get('token_file','/root/.config/cfsm/iperf-token')).read_text().strip()
+    req=urllib.request.Request(config['worker_url'].rstrip('/')+'/api/netwatch/report',
+        data=json.dumps({'samples':samples,'nodes':nodes}).encode(),
+        headers={'Content-Type':'application/json','X-Iperf-Token':token,'User-Agent':'CFSM-Netwatch/1.0'})
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req,timeout=8) as response:
+        ack=json.load(response)
+    if ack.get('success') is not True or ack.get('accepted')!=len(samples):
+        raise ValueError('monitor upload acknowledgement mismatch')
+    if batch:set_state(db,'upload_cursor',batch[-1]['id'])
+    settings={r['server_id']:r for r in ack.get('settings',[])}
+    changed=False
+    for node in config['nodes']:
+        setting=settings.get(node.get('id'))
+        if not setting:continue
+        update={'watch_enabled':bool(setting['enabled']),'speed_interval':setting['interval_seconds'],
+                'daily_budget_mib':setting['daily_budget_mib']}
+        for key,value in update.items():
+            if node.get(key)!=value:node[key]=value;changed=True
+    if changed and config.get('config_path'):
+        path=Path(config['config_path']);temporary=path.with_suffix('.monitor.tmp')
+        temporary.write_text(json.dumps({k:v for k,v in config.items() if k!='config_path'},ensure_ascii=False,indent=2))
+        temporary.chmod(0o600);temporary.replace(path)
+        event(db,'deb',0,'monitor_config_applied','已应用 monitor 后台的逐台启停、频率与预算；iperf 防火墙能力不变')
+    set_state(db,'last_upload',time.time())
+
+
 def daemon(config,once=False,quality_only=False):
     if socket.gethostname()!='deb':
         raise RuntimeError('监测必须运行在 deb')
@@ -430,6 +481,7 @@ def daemon(config,once=False,quality_only=False):
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         event(db,'deb',0,'started','启动监控；只校验路由，不修改路由或防火墙')
         last_prune=0
+        last_sync=0
         while True:
             now=time.time()
             set_state(db,'heartbeat',now)
@@ -437,18 +489,23 @@ def daemon(config,once=False,quality_only=False):
                 quality_cycle(db,config)
             if now-last_prune>3600:
                 prune(db,config); last_prune=now
+            if now-last_sync>=60:
+                try:sync_monitor(db,config)
+                except Exception as exc:
+                    event(db,'deb',0,'monitor_upload_failed',type(exc).__name__+'；本地结果保留，稍后补传')
+                last_sync=now
             did=False
             if not quality_only:
                 paths=[]
                 for n in config['nodes']:
-                    if not n.get('iperf_enabled') or state(db,'paused:'+n['name']): continue
+                    if not n.get('watch_enabled',True) or not n.get('iperf_enabled') or state(db,'paused:'+n['name']): continue
                     for f in (4,6):
                         if not n.get(f'ipv{f}'): continue
                         for direction in ('download','upload'):
                             item=state(db,f"speed:{n['name']}:{f}:{direction}",{})
                             health=state(db,f"quality:{n['name']}:{f}",{})
                             quality_bad=health.get('loss_bad') or health.get('tcp_fail_streak',0)>=2 or health.get('delay_streak',0)>=2
-                            interval=config['alert_interval'] if item.get('weak_streak',0) or quality_bad else config['speed_interval']
+                            interval=config['alert_interval'] if item.get('weak_streak',0) or quality_bad else n.get('speed_interval',config['speed_interval'])
                             if item.get('confirm_pending'):
                                 paths.append((item.get('last',0),n,f,direction,'confirm'))
                             elif now-item.get('last',0)>=interval:
@@ -569,6 +626,7 @@ def main():
         p=sub.add_parser(name);p.add_argument('--node');p.add_argument('--hours',type=float,default=24);p.add_argument('--limit',type=int,default=40)
     args=parser.parse_args()
     config=validate(json.loads(Path(args.config).read_text()))
+    config['config_path']=str(Path(args.config).resolve())
     if args.command=='check':
         print(json.dumps({'valid':True,'nodes':len(config['nodes']),'iperf_nodes':[n['name'] for n in config['nodes'] if n.get('iperf_enabled')],
                           'excluded':[{'node':n['name'],'reason':n.get('disabled_reason')} for n in config['nodes'] if not n.get('iperf_enabled')]},ensure_ascii=False,indent=2));return

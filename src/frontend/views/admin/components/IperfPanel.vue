@@ -31,6 +31,9 @@
         </tbody>
       </table>
     </div>
+    <details class="netwatch-settings"><summary>持续探测设置与上报状态</summary>
+      <NetwatchPanel :servers="servers" :selected-api-index="selectedApiIndex" />
+    </details>
     <h4>最近任务</h4>
     <p class="iperf-result-hint">下载、上传均以 deb 为视角；单位 Mbps，括号内为 TCP 重传次数。</p>
     <div class="iperf-table-wrap"><table class="iperf-table"><thead><tr><th>节点</th><th>来源</th><th>状态</th><th>创建时间</th><th>结果</th></tr></thead>
@@ -55,6 +58,7 @@
 
 <script setup>
 import { onBeforeUnmount, reactive, ref, watch } from 'vue'
+import NetwatchPanel from './NetwatchPanel.vue'
 import { adminApi } from '../../../utils/api'
 
 const props = defineProps({ activeTab: String, servers: { type: Array, default: () => [] }, selectedApiIndex: Number })

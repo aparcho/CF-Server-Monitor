@@ -160,9 +160,12 @@ export async function handleIperfTargets(request, env) {
   await ensureIperfJobTables(env.DB);
   for (const id of ids) if (!await serverExists(env.DB, id)) return createBadRequestResponse('unknownServer');
   const refreshId = await iperfAudit(env.DB, 'targets_refresh_begin', { server_ids: ids });
-  await env.DB.prepare("DELETE FROM iperf_targets WHERE source='deb'").run();
-  for (const id of ids) await env.DB.prepare('INSERT INTO iperf_targets (server_id,source,last_seen) VALUES (?,?,?)')
-    .bind(id, 'deb', Date.now()).run();
+  // 自动助手可能已登记相同节点；在同一事务中刷新，避免主键冲突和清空窗口。
+  const stale = ids.length
+    ? env.DB.prepare(`DELETE FROM iperf_targets WHERE source='deb' AND server_id NOT IN (${ids.map(() => '?').join(',')})`).bind(...ids)
+    : env.DB.prepare("DELETE FROM iperf_targets WHERE source='deb'");
+  await env.DB.batch([stale, ...ids.map(id => env.DB.prepare(`INSERT INTO iperf_targets (server_id,source,last_seen)
+    VALUES (?,'deb',?) ON CONFLICT(server_id) DO UPDATE SET source='deb',last_seen=excluded.last_seen`).bind(id,Date.now()))]);
   await iperfAudit(env.DB, 'targets_refresh_complete', { server_ids: ids }, refreshId);
   return createSuccessResponse({ count: ids.length });
 }

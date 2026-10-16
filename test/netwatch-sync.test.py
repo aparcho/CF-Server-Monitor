@@ -34,4 +34,18 @@ class SyncTests(unittest.TestCase):
    self.assertNotIn('management_host',captured[1]['samples'][0]['data'])
    self.assertFalse(config['nodes'][0]['watch_enabled'])
    self.assertEqual(json.loads((p/'config.json').read_text())['nodes'][0]['daily_budget_mib'],256)
+ def test_explicit_deletion_removes_only_deleted_node_and_empty_config_can_restart(self):
+  with tempfile.TemporaryDirectory() as temp:
+   p=Path(temp);(p/'token').write_text('test-only')
+   config=n.validate({'data_dir':temp,'worker_url':'https://monitor.test','token_file':str(p/'token'),'gateway_ipv4':'192.168.50.1','gateway_ipv6':'fe80::1','config_path':str(p/'config.json'),'nodes':[{'name':'AWS.TYO','id':'tyo','ipv4':'8.8.8.8'}]})
+   db=n.connect(config);self.addCleanup(db.close)
+   n.save(db,'AWS.TYO',4,'both','quality','ok',{'ping_sent':3,'ping_received':3,'ping_ms':[1,2,3]})
+   n.save(db,'AWS.HKG',4,'both','quality','ok',{'ping_sent':3,'ping_received':3,'ping_ms':[1,2,3]})
+   response=MagicMock();response.__enter__.return_value.read.return_value=json.dumps({'success':True,'accepted':1,'settings':[],'deleted_ids':['tyo']}).encode()
+   opener=MagicMock();opener.open.return_value=response
+   with patch.object(n.urllib.request,'build_opener',return_value=opener): n.sync_monitor(db,config)
+   self.assertEqual(config['nodes'],[])
+   self.assertEqual(db.execute("SELECT COUNT(*) FROM samples WHERE node='AWS.TYO'").fetchone()[0],0)
+   self.assertEqual(db.execute("SELECT COUNT(*) FROM samples WHERE node='AWS.HKG'").fetchone()[0],1)
+   self.assertEqual(n.validate(json.loads((p/'config.json').read_text()))['nodes'],[])
 if __name__=='__main__':unittest.main()

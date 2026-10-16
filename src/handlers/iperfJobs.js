@@ -1,3 +1,4 @@
+import { deletedServerIds } from '../utils/deleteServers.js';
 import { iperfAudit } from '../utils/iperfAudit.js';
 import { getIperfJobResults } from './iperf.js';
 import { createBadRequestResponse, createSuccessResponse, createUnauthorizedResponse } from '../utils/errors.js';
@@ -153,11 +154,13 @@ export async function handleIperfTargets(request, env) {
   if (!runnerAuthorized(request, env)) return createUnauthorizedResponse();
   let body;
   try { body = await request.json(); } catch { return createBadRequestResponse('invalidJson'); }
-  const ids = body?.server_ids;
+  let ids = body?.server_ids;
   if (!Array.isArray(ids) || ids.length > 20 || ids.some(id => typeof id !== 'string' || !SERVER_ID.test(id))) {
     return createBadRequestResponse('invalidTargetIds');
   }
   await ensureIperfJobTables(env.DB);
+  const deleted_ids = await deletedServerIds(env.DB, ids);
+  ids = ids.filter(id => !deleted_ids.includes(id));
   for (const id of ids) if (!await serverExists(env.DB, id)) return createBadRequestResponse('unknownServer');
   const refreshId = await iperfAudit(env.DB, 'targets_refresh_begin', { server_ids: ids });
   // 自动助手可能已登记相同节点；在同一事务中刷新，避免主键冲突和清空窗口。
@@ -165,9 +168,9 @@ export async function handleIperfTargets(request, env) {
     ? env.DB.prepare(`DELETE FROM iperf_targets WHERE source='deb' AND server_id NOT IN (${ids.map(() => '?').join(',')})`).bind(...ids)
     : env.DB.prepare("DELETE FROM iperf_targets WHERE source='deb'");
   await env.DB.batch([stale, ...ids.map(id => env.DB.prepare(`INSERT INTO iperf_targets (server_id,source,last_seen)
-    VALUES (?,'deb',?) ON CONFLICT(server_id) DO UPDATE SET source='deb',last_seen=excluded.last_seen`).bind(id,Date.now()))]);
+    SELECT ?,'deb',? WHERE EXISTS (SELECT 1 FROM servers WHERE id=?) ON CONFLICT(server_id) DO UPDATE SET source='deb',last_seen=excluded.last_seen`).bind(id,Date.now(),id))]);
   await iperfAudit(env.DB, 'targets_refresh_complete', { server_ids: ids }, refreshId);
-  return createSuccessResponse({ count: ids.length });
+  return createSuccessResponse({ count: ids.length, deleted_ids });
 }
 
 export async function handleIperfClaim(request, env) {

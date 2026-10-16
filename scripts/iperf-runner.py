@@ -190,8 +190,15 @@ def main():
     token = Path(args.token_file).read_text().strip()
     if not token:
         raise ValueError('empty token file')
-    api(config['worker_url'], token, '/api/iperf/targets',
+    refresh = api(config['worker_url'], token, '/api/iperf/targets',
         {'server_ids': [target['id'] for target in config['targets']]})
+    deleted = set(refresh.get('deleted_ids', []))
+    if deleted:
+        config['targets'] = [t for t in config['targets'] if t['id'] not in deleted]
+        path = Path(args.config); temporary = path.with_suffix('.reconcile.tmp')
+        temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2))
+        temporary.chmod(0o600); temporary.replace(path)
+        audit('deleted_targets_removed', server_ids=sorted(deleted))
     job = api(config['worker_url'], token, '/api/iperf/jobs/claim', {})
     if not job:
         audit('claim_empty')

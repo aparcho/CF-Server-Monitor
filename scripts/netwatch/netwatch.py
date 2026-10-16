@@ -81,8 +81,8 @@ def run(command, timeout=10, **kwargs):
 
 def validate(config):
     names = set()
-    if not config.get('nodes'):
-        raise ValueError('nodes is empty')
+    if not isinstance(config.get('nodes'),list):
+        raise ValueError('nodes must be a list')
     for node in config['nodes']:
         node.setdefault('watch_enabled',False)
         if not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', node['name']) or node['name'] in names:
@@ -457,7 +457,22 @@ def sync_monitor(db,config):
         raise ValueError('monitor upload acknowledgement mismatch')
     if batch:set_state(db,'upload_cursor',batch[-1]['id'])
     settings={r['server_id']:r for r in ack.get('settings',[])}
-    changed=False
+    deleted=set(ack.get('deleted_ids',[]))
+    removed=[node for node in config['nodes'] if node.get('id') in deleted]
+    changed=bool(removed)
+    for node in removed:
+        name=node['name']
+        # 删除标识经过服务端鉴权确认；网络错误及配置暂缺均不会触发清理。
+        with db:
+            for table in ('samples','events'):
+                db.execute(f'DELETE FROM {table} WHERE node=?',(name,))
+            # 预算账本保留匿名总量，删除节点不能返还当天已用流量。
+            db.execute("UPDATE reservations SET node='retired' WHERE node=?",(name,))
+            db.execute("DELETE FROM state WHERE key=? OR key LIKE ? OR key LIKE ?",('paused:'+name,'quality:'+name+':%','speed:'+name+':%'))
+        for raw in (Path(config['data_dir'])/'raw').glob('????-??-??/'+name+'-v[46]-*'):
+            if raw.is_file() and not raw.is_symlink():raw.unlink()
+        event(db,'deb',0,'monitor_node_removed',name+' 已从 monitor 删除，停止探测并清除活动配置与本地记录')
+    config['nodes']=[node for node in config['nodes'] if node.get('id') not in deleted]
     for node in config['nodes']:
         setting=settings.get(node.get('id'))
         if not setting:continue

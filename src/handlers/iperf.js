@@ -73,11 +73,11 @@ export async function handleIperfReport(request, env) {
     if (!exists) return createBadRequestResponse('unknownServer');
   }
   const sql = `INSERT INTO iperf_results (run_id, server_id, source, family, direction, tested_at, duration_seconds, port, status, mbps, retransmits, error)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM servers WHERE id=?)
     ON CONFLICT(run_id, server_id, family, direction) DO UPDATE SET status=excluded.status, mbps=excluded.mbps, retransmits=excluded.retransmits, error=excluded.error`;
   await env.DB.batch(results.map(r => env.DB.prepare(sql).bind(...[
     r.run_id, r.server_id, r.source, r.family, r.direction, r.tested_at,
-    r.duration_seconds, r.port, r.status, r.mbps, r.retransmits, r.error
+    r.duration_seconds, r.port, r.status, r.mbps, r.retransmits, r.error, r.server_id
   ])));
   return createSuccessResponse({ success: true, count: results.length });
 }

@@ -1,3 +1,4 @@
+import { deletedServerIds } from '../utils/deleteServers.js';
 import { checkAuth } from '../middleware/auth.js';
 import { createSuccessResponse,createBadRequestResponse,createUnauthorizedResponse } from '../utils/errors.js';
 import { ensureIperfResultsTable } from './iperf.js';
@@ -57,18 +58,19 @@ export async function handleNetwatchReport(request,env) {
   const statements=[];const now=Date.now();
   for(const n of body.nodes.filter(n=>servers.has(n.server_id)))statements.push(env.DB.prepare(`INSERT INTO netwatch_nodes
     (server_id,enabled,iperf_capable,reason,interval_seconds,daily_budget_mib,last_seen,budget_day,payload_bytes,reserved_bytes)
-    VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET iperf_capable=excluded.iperf_capable,reason=excluded.reason,
+    SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM servers WHERE id=?) ON CONFLICT(server_id) DO UPDATE SET iperf_capable=excluded.iperf_capable,reason=excluded.reason,
       last_seen=excluded.last_seen,budget_day=excluded.budget_day,payload_bytes=excluded.payload_bytes,reserved_bytes=excluded.reserved_bytes`)
-    .bind(n.server_id,n.enabled?1:0,n.iperf_capable?1:0,String(n.reason||'').slice(0,160),300,n.daily_budget_mib,now,n.budget_day,n.payload_bytes,n.reserved_bytes));
-  for(const s of samples.filter(s=>servers.has(s.server_id)))statements.push(env.DB.prepare(`INSERT OR IGNORE INTO netwatch_samples VALUES (?,?,?,?,?,?,?,?)`)
-    .bind(s.id,s.server_id,s.tested_at,s.kind,s.family,s.direction,s.status,JSON.stringify(s.data)));
+    .bind(n.server_id,n.enabled?1:0,n.iperf_capable?1:0,String(n.reason||'').slice(0,160),300,n.daily_budget_mib,now,n.budget_day,n.payload_bytes,n.reserved_bytes,n.server_id));
+  for(const s of samples.filter(s=>servers.has(s.server_id)))statements.push(env.DB.prepare(`INSERT OR IGNORE INTO netwatch_samples SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM servers WHERE id=?)`)
+    .bind(s.id,s.server_id,s.tested_at,s.kind,s.family,s.direction,s.status,JSON.stringify(s.data),s.server_id));
   if(statements.length)await env.DB.batch(statements);
   const settings=(await env.DB.prepare('SELECT server_id,enabled,interval_seconds,daily_budget_mib FROM netwatch_nodes').all()).results;
   // 每小时最多一次清理，避免每个上报批次扫描历史。
   const cleanup=await env.DB.prepare(`INSERT INTO netwatch_meta VALUES ('cleanup_hour',?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<excluded.value`).bind(Math.floor(now/HOUR)).run();
   if(cleanup.meta?.changes)await env.DB.prepare('DELETE FROM netwatch_samples WHERE tested_at<?').bind(now-30*24*HOUR).run();
-  return createSuccessResponse({success:true,accepted:body.samples.length,settings});
+  const deleted_ids=await deletedServerIds(env.DB,[...new Set([...body.nodes.map(n=>n.server_id),...samples.map(n=>n.server_id)])]);
+  return createSuccessResponse({success:true,accepted:body.samples.length,settings,deleted_ids});
 }
 const decode=r=>({...r,data:JSON.parse(r.data)});
 const median=a=>{const b=[...a].sort((x,y)=>x-y);return b.length?b[Math.floor(b.length/2)]:null};

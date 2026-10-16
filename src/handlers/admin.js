@@ -1,3 +1,4 @@
+import { deleteServers } from '../utils/deleteServers.js';
 import { buildAuthCookie, buildClearAuthCookie, checkAuth, simpleAuthResponse, validateCredentials, generateToken } from '../middleware/auth.js';
 import { getLatestMetricsForAllServers } from '../database/schema.js';
 import { getAllServers, clearServersListCache } from '../utils/cache.js';
@@ -231,25 +232,6 @@ async function validateThemeUrlAvailable(themeUrl) {
   }
 }
 
-async function deleteServer(db, id) {
-  try {
-    const stmt1 = db.prepare(`PRAGMA foreign_key_list(metrics_history)`);
-    const result1 = await stmt1.all();
-    if (result1.results.length > 0) {
-      await db.prepare('DELETE FROM metrics_history WHERE server_id = ?').bind(id).run();
-    }
-
-    const stmt2 = db.prepare(`PRAGMA foreign_key_list(metrics_history_old)`);
-    const result2 = await stmt2.all();
-    if (result2.results.length > 0) {
-      await db.prepare('DELETE FROM metrics_history_old WHERE server_id = ?').bind(id).run();
-    }
-
-    await db.prepare('DELETE FROM servers WHERE id = ?').bind(id).run();
-  } catch (err) {
-    throw err;
-  }
-}
 
 function getUtcTodayRange() {
   const now = new Date();
@@ -992,7 +974,7 @@ export async function handleAdminAPI(request, env, sys, loadFullSettings = null,
         return createBadRequestResponse('invalidServerId');
       }
       
-      await deleteServer(env.DB, id);
+      await deleteServers(env.DB, [id]);
       
       clearServersListCache();
       
@@ -1139,9 +1121,7 @@ export async function handleAdminAPI(request, env, sys, loadFullSettings = null,
         }
       }
       
-      for (const id of ids) {
-        await deleteServer(env.DB, id);
-      }
+      await deleteServers(env.DB, ids);
       
       clearServersListCache();
       

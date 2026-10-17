@@ -108,10 +108,9 @@ export async function handleIperfAdminAction(data, env) {
 }
 
 // 按需补测仍受逐节点开关控制；不改变每日计划，也不为无历史节点首测。
-export function refreshPolicy(now) {
-  const hour=new Date(now+BEIJING_OFFSET).getUTCHours();
-  return {age_ms:(hour>=20 && hour<23?2:12)*3600000,min_gap_ms:2*3600000,
-    failure_gap_ms:6*3600000,window_ms:24*3600000,limit:3,duration_seconds:5};
+export function refreshPolicy() {
+  return {age_ms:12*3600000,min_gap_ms:2*3600000,
+    failure_gap_ms:6*3600000,window_ms:24*3600000,limit:1,duration_seconds:5};
 }
 export async function enqueueExpiredIperfJobs(db,now=Date.now()) {
   await ensureIperfJobTables(db);await ensureIperfResultsTable(db);

@@ -3,7 +3,7 @@
     <h3>iperf3 测速</h3>
     <p>测试由 deb 发起，使用目标节点的临时 5202 监听。每天可设置日间、晚高峰及可选的第二次晚高峰测试，时间均为北京时间。</p>
     <p>新 Linux 节点使用后台安装命令并以 root 安装时会自动接入测速。接入检查通过后可手动测速，定时默认关闭。</p>
-    <p>按需补测：平时超过 12 小时、晚高峰（20–23 点）超过 2 小时更新；每方向 5 秒，每台滚动 24 小时最多 3 次，最短间隔 2 小时，失败冷却 6 小时。只对已勾选且有测速历史的节点执行。</p>
+    <p>按需补测：测速结果超过 12 小时才更新（不区分时段）；每方向 5 秒，每台滚动 24 小时最多 1 次，最短间隔 2 小时，失败冷却 6 小时。只对已勾选且有测速历史的节点执行。</p>
     <button class="btn" :disabled="loading" @click="load">↻ 刷新任务</button>
     <p v-if="message" :class="{ 'iperf-error': error }">{{ message }}</p>
     <div class="iperf-table-wrap">
@@ -176,7 +176,7 @@ async function retry(id) {
 async function saveExpiry(id) {
   const enabled=form(id).expiry_refresh_enabled
   const data=await call({action:'iperf_expiry_refresh',server_id:id,enabled})
-  if(data) message.value=enabled?'按需补测已开启：平时超过 12 小时、晚高峰超过 2 小时更新；每方向 5 秒，每台滚动 24 小时最多 3 次，最短间隔 2 小时，失败冷却 6 小时。':'到期补测已关闭。'
+  if(data) message.value=enabled?'按需补测已开启：测速结果超过 12 小时才更新（不区分时段）；每方向 5 秒，每台滚动 24 小时最多 1 次，最短间隔 2 小时，失败冷却 6 小时。':'到期补测已关闭。'
   else form(id).expiry_refresh_enabled=!enabled
 }
 async function save(id) {

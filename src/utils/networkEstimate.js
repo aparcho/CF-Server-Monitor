@@ -1,4 +1,4 @@
-// 从 SAO networkEstimate.ts 生成；v0.6 当前评分，两端同步更新。
+// 从 SAO networkEstimate.ts 生成；v0.7 当前评分，两端同步更新。
 const HOUR = 3600_000;
 export const CURRENT_WINDOW_MS = 10 * 60_000;
 export function recentProbe(probe, now) {
@@ -113,7 +113,7 @@ export function estimateNetwork(family, probes, results, now, offline) {
     const batch = latest ? familyRows.filter(r => r.run_id === latest.run_id) : [];
     const download = batch.find(r => r.direction === "download"), upload = batch.find(r => r.direction === "upload");
     const metrics = probe ? probeVariation(probe, now) : null;
-    const base = { modelVersion: 6, family, probe, testedAt: latest?.tested_at, download, upload, metrics,
+    const base = { modelVersion: 7, family, probe, testedAt: latest?.tested_at, download, upload, metrics,
         speedAgeMs: latest ? Math.max(0, now - latest.tested_at) : null, speedBasis: "latest",
         retransmission: null,
         latency: null, loss: null, speed: null, variation: null,
@@ -160,8 +160,8 @@ export function estimateNetwork(family, probes, results, now, offline) {
     const rd = retransmissionCost(download), ru = retransmissionCost(upload);
     // 缺项不按零重传显示，也不额外奖分；仅对有依据的方向扣分，避免缺项放大惩罚。
     const retransmission = rd || ru ? { penalty: 0.7 * (rd?.penalty ?? 0) + 0.3 * (ru?.penalty ?? 0), download: rd, upload: ru } : null;
-    const score = probe.loss === 100 ? 0 : Math.max(0, Math.round(total / (variation == null ? 0.9 : 1) - (retransmission?.penalty ?? 0)));
+    const score = probe.loss === 100 ? 0 : Math.max(0, Math.round((total / (variation == null ? 0.9 : 1) - (retransmission?.penalty ?? 0)) * 10) / 10);
     const notes = [age > 6 * HOUR ? "带宽为较早实测参考" : age > HOUR ? "带宽非当前实测" : "", variation == null ? "近期波动样本不足" : ""].filter(Boolean);
     return { ...base, score, retransmission, latency, loss, speed, variation, latencyMs, peak, offpeak, peakWeight, excludedBatches,
-        reason: notes.length ? `暂估 · ${notes.join(" · ")}` : "当前估算 v0.6" };
+        reason: notes.length ? `暂估 · ${notes.join(" · ")}` : "当前估算 v0.7" };
 }

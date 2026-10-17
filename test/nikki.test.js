@@ -88,6 +88,17 @@ test('上报到持久评分到公开徽章闭环：重放不重复，离开线�
   assert.equal(data.routes[0].low_since,null);assert.equal(data.routes[0].alerted,false);
   assert.equal((await post({...exitOnly,observed_at:now+6,routes:[{...exitOnly.routes[0],exit_connections:-1}]})).status,400);
   assert.equal((await post({...exitOnly,observed_at:now+6,routes:[{...exitOnly.routes[0],exit_connections:0}]})).status,400);
+  // INTEGER 亲和列仍须保存小数；同时核实公开状态与持久化评分完全一致。
+  for(const [direction,mbps] of [['download',600],['upload',200]])sqlite.prepare(`INSERT INTO iperf_results
+    (run_id,server_id,source,family,direction,tested_at,duration_seconds,port,status,mbps,retransmits)
+    VALUES ('precision','vps','deb','ipv4',?,?,5,5202,'ok',?,0)`).run(direction,now,mbps);
+  await post({...exitOnly,observed_at:now+6});
+  data=await (await get()).json();
+  const saved=sqlite.prepare("SELECT score FROM nikki_routes WHERE server_id='vps'").get().score;
+  assert.equal(data.routes[0].estimate.modelVersion,7);
+  assert.equal(Number.isInteger(saved),false);
+  assert.equal(saved,data.routes[0].score);assert.equal(saved,data.routes[0].estimate.score);
+  assert.ok(Math.abs(saved*10-Math.round(saved*10))<1e-8);
   await post({...body,observed_at:now+7,routes:[]});assert.equal((await (await get()).json()).routes.length,0);
   sqlite.prepare('DELETE FROM servers').run();
   await post({...body,observed_at:now+8});assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM nikki_routes').get().n,0);

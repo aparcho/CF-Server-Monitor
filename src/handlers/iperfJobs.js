@@ -25,7 +25,7 @@ export async function ensureIperfJobTables(db) {
     updated_at INTEGER NOT NULL
   )`).run();
   const columns = await db.prepare('PRAGMA table_info(iperf_schedules)').all();
-  for (const [name, definition] of [['time_beijing_day', "TEXT NOT NULL DEFAULT '11:30'"], ['time_beijing_extra', 'TEXT DEFAULT NULL']]) {
+  for (const [name, definition] of [['time_beijing_day', "TEXT NOT NULL DEFAULT '11:30'"], ['time_beijing_extra', 'TEXT DEFAULT NULL'], ['expiry_refresh_enabled','INTEGER NOT NULL DEFAULT 0']]) {
     if (!(columns.results || []).some(column => column.name === name)) {
       try { await db.prepare(`ALTER TABLE iperf_schedules ADD COLUMN ${name} ${definition}`).run(); }
       catch (error) { if (!/duplicate column name/i.test(error.message || '')) throw error; }
@@ -67,6 +67,15 @@ export async function handleIperfAdminAction(data, env) {
   const id = data.server_id;
   if (typeof id !== 'string' || !SERVER_ID.test(id) || !await serverExists(env.DB, id)) return createBadRequestResponse('unknownServer');
   if (action === 'iperf_onboard_retry') return retryIperfEnrollment(env.DB, id);
+  if (action === 'iperf_expiry_refresh') {
+    if(typeof data.enabled!=='boolean')return createBadRequestResponse('invalidIperfSchedule');
+    if(data.enabled && !await targetReady(env.DB,id))return createBadRequestResponse('targetNotReadyOnDeb');
+    await env.DB.prepare(`INSERT INTO iperf_schedules(server_id,enabled,time_beijing,duration_seconds,updated_at,expiry_refresh_enabled)
+      VALUES (?,0,'21:30',10,?,?) ON CONFLICT(server_id) DO UPDATE SET expiry_refresh_enabled=excluded.expiry_refresh_enabled,updated_at=excluded.updated_at`)
+      .bind(id,Date.now(),data.enabled?1:0).run();
+    await iperfAudit(env.DB,'expiry_refresh_saved',{server_id:id,enabled:data.enabled});
+    return createSuccessResponse({server_id:id,expiry_refresh_enabled:data.enabled});
+  }
   const duration = validDuration(data.duration_seconds);
   if (!duration) return createBadRequestResponse('invalidDuration');
   if (action === 'iperf_trigger') {
@@ -96,6 +105,40 @@ export async function handleIperfAdminAction(data, env) {
     return createSuccessResponse({ server_id: id, enabled, time_beijing: time, time_beijing_day: dayTime, time_beijing_extra: extraTime, duration_seconds: duration });
   }
   return createBadRequestResponse('unknownIperfAction');
+}
+
+// 独立于日常定时：已有测速历史到期才补测，新节点和显式关闭的节点不自动耗流量。
+export async function enqueueExpiredIperfJobs(db,now=Date.now()) {
+  await ensureIperfJobTables(db);await ensureIperfResultsTable(db);
+  const candidates=(await db.prepare(`SELECT s.server_id,s.duration_seconds,t.last_seen,
+    (SELECT MIN(latest_at) FROM (SELECT MAX(tested_at) AS latest_at FROM iperf_results
+      WHERE server_id=s.server_id AND source='deb' GROUP BY family)) AS oldest_family_at,
+    (SELECT MAX(created_at) FROM iperf_jobs WHERE server_id=s.server_id AND source='refresh') AS last_refresh_at
+    FROM iperf_schedules s JOIN servers v ON v.id=s.server_id
+    LEFT JOIN iperf_targets t ON t.server_id=s.server_id WHERE s.expiry_refresh_enabled=1`).all()).results||[];
+  let count=0;
+  if(candidates.length)await iperfAudit(db,'expiry_refresh_checked',{checked_at:now,selection:candidates.map(c=>({server_id:c.server_id,
+    oldest_family_at:c.oldest_family_at,next_due_at:c.oldest_family_at==null?null:c.oldest_family_at+72*3600000,
+    last_refresh_at:c.last_refresh_at,target_last_seen:c.last_seen}))});
+  for(const candidate of candidates) {
+    if(candidate.oldest_family_at==null || now-candidate.oldest_family_at<=72*3600000)continue;
+    const reason=!(candidate.last_seen>now-300000)?'target_not_ready'
+      :candidate.last_refresh_at!=null && now-candidate.last_refresh_at<86400000?'retry_cooldown':null;
+    if(reason) {
+      // 24 小时冷却内无需每分钟重复写一条相同日志。
+      if(reason!=='retry_cooldown')await iperfAudit(db,'expiry_refresh_skipped',{server_id:candidate.server_id,reason,oldest_family_at:candidate.oldest_family_at});
+      continue;
+    }
+    const slot=`expiry:${Math.floor(now/86400000)}`;
+    const result=await db.prepare(`INSERT OR IGNORE INTO iperf_jobs(id,server_id,source,status,duration_seconds,scheduled_slot,created_at)
+      SELECT ?,?,'refresh','queued',?,?,? WHERE NOT EXISTS(SELECT 1 FROM iperf_jobs WHERE server_id=? AND status IN ('queued','running'))
+      AND NOT EXISTS(SELECT 1 FROM iperf_jobs WHERE server_id=? AND source='refresh' AND created_at>?)
+      AND (SELECT MIN(latest_at) FROM (SELECT MAX(tested_at) AS latest_at FROM iperf_results WHERE server_id=? AND source='deb' GROUP BY family))<?`)
+      .bind(crypto.randomUUID(),candidate.server_id,candidate.duration_seconds,slot,now,candidate.server_id,candidate.server_id,now-86400000,candidate.server_id,now-72*3600000).run();
+    const inserted=result.meta?.changes||0;count+=inserted;
+    await iperfAudit(db,'expiry_refresh_enqueue',{server_id:candidate.server_id,oldest_family_at:candidate.oldest_family_at,inserted,slot});
+  }
+  return count;
 }
 
 export async function enqueueDueIperfJobs(db, now = Date.now(), event = {}) {

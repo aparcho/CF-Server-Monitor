@@ -9,7 +9,7 @@ import { handleTheme } from './handlers/theme.js';
 import { handleNetwatchRetired } from './handlers/netwatchRetired.js';
 import { handleIperfReport, handleIperfResults } from './handlers/iperf.js';
 import { handleNikkiReport, handleNikkiStatus } from './handlers/nikki.js';
-import { handleIperfClaim, handleIperfFinish, handleIperfTargets, enqueueDueIperfJobs } from './handlers/iperfJobs.js';
+import { handleIperfClaim, handleIperfFinish, handleIperfTargets, enqueueDueIperfJobs, enqueueExpiredIperfJobs } from './handlers/iperfJobs.js';
 import { iperfAudit, traceIperfRequest } from './utils/iperfAudit.js';
 import { handleIperfBootstrap, handleIperfNode, handleIperfListener } from './handlers/iperfAuto.js';
 import { isValidThemeOptions, loadSettings, loadSiteSettings, loadAppearanceOptions, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, saveThemeOptions, setDebug, debug } from './utils/settings.js';
@@ -507,6 +507,7 @@ export default {
     
     if (cron === '*/1 * * * *') {
       await enqueueDueIperfJobs(env.DB, now.getTime(), {cron,scheduledTime:event.scheduledTime,correlationId:auditId});
+      await enqueueExpiredIperfJobs(env.DB,now.getTime());
       if (day === 0 && hour === 0 && minute < 5) {
         debug('[Cron] 每周日0:00-0:05表轮换期间，跳过离线节点检测');
       } else {

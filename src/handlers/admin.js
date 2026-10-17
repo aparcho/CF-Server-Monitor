@@ -722,6 +722,7 @@ const AUTHENTICATED_ADMIN_ACTION_HANDLERS = {
   iperf_list: ({ data, env }) => handleIperfAdminAction(data, env),
   iperf_trigger: ({ data, env }) => handleIperfAdminAction(data, env),
   iperf_schedule: ({ data, env }) => handleIperfAdminAction(data, env),
+  iperf_expiry_refresh: ({ data, env }) => handleIperfAdminAction(data, env),
   iperf_onboard_retry: ({ data, env }) => handleIperfAdminAction(data, env),
   get_settings: handleGetSettingsAction,
   start_theme_preview: handleStartThemePreviewAction,

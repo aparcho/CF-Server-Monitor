@@ -18,7 +18,9 @@
               </div>
             </td>
             <td><select v-model.number="form(server.id).duration_seconds"><option :value="5">5 秒</option><option :value="10">10 秒</option><option :value="30">30 秒</option></select></td>
-            <td><button class="btn" :disabled="loading || pending(server.id) || !ready(server.id)" @click="trigger(server.id)">{{ !ready(server.id) ? '未接入 deb' : pending(server.id) ? '任务进行中' : '开始测速' }}</button></td>
+            <td><button class="btn" :disabled="loading || pending(server.id) || !ready(server.id)" @click="trigger(server.id)">{{ !ready(server.id) ? '未接入 deb' : pending(server.id) ? '任务进行中' : '开始测速' }}</button>
+              <label class="iperf-expiry"><input type="checkbox" v-model="form(server.id).expiry_refresh_enabled" :disabled="loading || !ready(server.id)" :aria-label="`${server.name || server.id} 到期自动补测`" @change="saveExpiry(server.id)" /> 到期自动补测（72 小时）</label>
+            </td>
             <td><div class="iperf-schedule">
               <label><input type="checkbox" v-model="form(server.id).enabled" /> 启用每日定时</label>
               <label>日间 <input type="time" v-model="form(server.id).time_beijing_day" :aria-label="`${server.name || server.id} 日间时间（北京时间）`" /></label>
@@ -36,7 +38,7 @@
     <div class="iperf-table-wrap"><table class="iperf-table"><thead><tr><th>节点</th><th>来源</th><th>状态</th><th>创建时间</th><th>结果</th></tr></thead>
       <tbody><tr v-for="job in pagedJobs" :key="job.id">
         <td>{{ serverName(job.server_id) }}</td>
-        <td>{{ job.source === 'onboarding' ? '自动接入检查' : job.source === 'scheduled' ? '定时' : '手动' }}</td>
+        <td>{{ job.source === 'onboarding' ? '自动接入检查' : job.source === 'scheduled' ? '定时' : job.source === 'refresh' ? '到期补测' : '手动' }}</td>
         <td class="iperf-job-status">{{ statusName(job.status) }}</td>
         <td class="iperf-job-time">{{ formatTime(job.created_at) }}</td>
         <td class="iperf-job-results">
@@ -83,7 +85,7 @@ const forms = reactive({})
 const loading = ref(false)
 const message = ref('')
 const error = ref(false)
-const form = (id) => forms[id] ||= { enabled: false, time_beijing_day: '11:30', time_beijing: '21:30', time_beijing_extra: '', duration_seconds: 10 }
+const form = (id) => forms[id] ||= { enabled: false, expiry_refresh_enabled: false, time_beijing_day: '11:30', time_beijing: '21:30', time_beijing_extra: '', duration_seconds: 10 }
 const serverName = (id) => props.servers.find(s => s.id === id)?.name || id
 const pending = (id) => jobs.value.some(j => j.server_id === id && ['queued', 'running'].includes(j.status))
 const ready = (id) => readyTargets.value.includes(id)
@@ -140,7 +142,7 @@ async function load(options = {}) {
     readyTargets.value = data.ready_targets || []
     enrollments.value = data.enrollments || []
     // 自动刷新只更新任务；保留用户尚未保存的定时与时长编辑。
-    if (!background) for (const schedule of data.schedules || []) Object.assign(form(schedule.server_id), { enabled: !!schedule.enabled, time_beijing: schedule.time_beijing, time_beijing_day: schedule.time_beijing_day || '11:30', time_beijing_extra: schedule.time_beijing_extra || '', duration_seconds: schedule.duration_seconds })
+    if (!background) for (const schedule of data.schedules || []) Object.assign(form(schedule.server_id), { enabled: !!schedule.enabled, expiry_refresh_enabled: !!schedule.expiry_refresh_enabled, time_beijing: schedule.time_beijing, time_beijing_day: schedule.time_beijing_day || '11:30', time_beijing_extra: schedule.time_beijing_extra || '', duration_seconds: schedule.duration_seconds })
   } finally { listRequests--; schedulePolling() }
 }
 async function trigger(id) {
@@ -154,6 +156,12 @@ async function trigger(id) {
 }
 async function retry(id) {
   if (await call({ action: 'iperf_onboard_retry', server_id: id })) await load()
+}
+async function saveExpiry(id) {
+  const enabled=form(id).expiry_refresh_enabled
+  const data=await call({action:'iperf_expiry_refresh',server_id:id,enabled})
+  if(data) message.value=enabled?'到期补测已开启：最近测速超过 72 小时后自动排队，使用已保存的测试时长；失败后至少间隔 24 小时重试。':'到期补测已关闭。'
+  else form(id).expiry_refresh_enabled=!enabled
 }
 async function save(id) {
   const times = [form(id).time_beijing_day, form(id).time_beijing, form(id).time_beijing_extra].filter(Boolean)
@@ -183,6 +191,7 @@ onBeforeUnmount(() => { disposed = true; ++loadSequence; stopPolling() })
 .iperf-table { width: 100%; border-collapse: collapse; min-width: 620px; }
 .iperf-table th, .iperf-table td { padding: 10px; border-bottom: 1px solid #7774; text-align: left; }
 .iperf-schedule { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.iperf-expiry { display:flex; align-items:center; gap:6px; margin-top:8px; font-size:12px; white-space:nowrap; }
 .iperf-schedule label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .iperf-table input[type=time], .iperf-table select { color: inherit; background: transparent; border: 1px solid #7778; border-radius: 4px; padding: 5px; }
 .iperf-job-status, .iperf-job-time { white-space: nowrap; }

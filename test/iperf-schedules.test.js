@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { enqueueDueIperfJobs, enqueueExpiredIperfJobs, ensureIperfJobTables, handleIperfAdminAction } from '../src/handlers/iperfJobs.js';
+import { enqueueDueIperfJobs, enqueueExpiredIperfJobs, ensureIperfJobTables, handleIperfAdminAction, refreshPolicy } from '../src/handlers/iperfJobs.js';
 import { ensureIperfResultsTable } from '../src/handlers/iperf.js';
 
 const { DatabaseSync } = await import('node:sqlite').catch(() => ({}));
@@ -36,7 +36,7 @@ test('旧单时段配置升级后保留晚高峰和启用状态，新增 11:30',
   } finally { sqlite.close(); }
 });
 
-test('到期补测独立开关保留每日计划，72小时边界、手动刷新、重复派发及失败冷却', {skip:!DatabaseSync}, async()=>{
+test('到期补测独立开关保留每日计划，12小时边界、手动刷新、重复派发及失败冷却', {skip:!DatabaseSync}, async()=>{
   const {DB,sqlite}=database();
   try {
     await ensureIperfJobTables(DB);await ensureIperfResultsTable(DB);
@@ -47,22 +47,22 @@ test('到期补测独立开关保留每日计划，72小时边界、手动刷新
     const target=sqlite.prepare('INSERT OR REPLACE INTO iperf_targets VALUES (?,?,?)');
     for(const id of ['lax','off','new','gone'])target.run(id,'deb',now);
     const result=sqlite.prepare(`INSERT OR REPLACE INTO iperf_results VALUES (? ,?,'deb',?,'download',?,10,5202,'ok',100,0,NULL)`);
-    result.run('old','lax','ipv4',now-72*hour);result.run('old','lax','ipv6',now-71*hour);
+    result.run('old','lax','ipv4',now-12*hour);result.run('old','lax','ipv6',now-11*hour);
     result.run('old','off','ipv4',now-80*hour);result.run('old','gone','ipv4',now-80*hour);
     sqlite.exec("DELETE FROM servers WHERE id='gone'");
     assert.equal(await enqueueExpiredIperfJobs(DB,now),0);
     assert.equal(await enqueueExpiredIperfJobs(DB,now+1),1);
     assert.equal(await enqueueExpiredIperfJobs(DB,now+2),0);
     const job=sqlite.prepare("SELECT * FROM iperf_jobs WHERE source='refresh'").get();
-    assert.equal(job.server_id,'lax');assert.equal(job.duration_seconds,10);
+    assert.equal(job.server_id,'lax');assert.equal(job.duration_seconds,5);
     sqlite.exec("UPDATE iperf_jobs SET status='failed'");
-    target.run('lax','deb',now+23*hour);
-    assert.equal(await enqueueExpiredIperfJobs(DB,now+23*hour),0);
-    target.run('lax','deb',now+25*hour);
-    result.run('manual','lax','ipv4',now+24*hour);result.run('manual','lax','ipv6',now+24*hour);
-    assert.equal(await enqueueExpiredIperfJobs(DB,now+25*hour),0);
+    target.run('lax','deb',now+5*hour);
+    assert.equal(await enqueueExpiredIperfJobs(DB,now+5*hour),0);
+    target.run('lax','deb',now+7*hour);
+    result.run('manual','lax','ipv4',now+6*hour);result.run('manual','lax','ipv6',now+6*hour);
+    assert.equal(await enqueueExpiredIperfJobs(DB,now+7*hour),0);
     sqlite.exec("DELETE FROM iperf_results WHERE run_id='manual'");
-    assert.equal(await enqueueExpiredIperfJobs(DB,now+25*hour),1);
+    assert.equal(await enqueueExpiredIperfJobs(DB,now+7*hour),1);
     target.run('lax','deb',Date.now());
     const disabled=await handleIperfAdminAction({action:'iperf_expiry_refresh',server_id:'lax',enabled:false},{DB});
     assert.equal(disabled.status,200);
@@ -84,7 +84,7 @@ test('到期补测遇到正在运行的手工测速或未就绪目标不排队',
     sqlite.prepare("INSERT INTO iperf_targets VALUES ('busy','deb',?)").run(now);
     sqlite.prepare("INSERT INTO iperf_jobs(id,server_id,source,status,duration_seconds,created_at) VALUES ('manual','busy','manual','running',5,?)").run(now);
     assert.equal(await enqueueExpiredIperfJobs(DB,now),0);
-    const audit=sqlite.prepare("SELECT detail FROM iperf_event_audit WHERE phase='expiry_refresh_skipped'").get();
+    const audit=sqlite.prepare("SELECT detail FROM iperf_event_audit WHERE phase='expiry_refresh_skipped' AND json_extract(detail,'$.server_id')='unready'").get();
     assert.equal(JSON.parse(audit.detail).reason,'target_not_ready');
   }finally {sqlite.close();}
 });
@@ -184,4 +184,26 @@ test('诊断记录区分时间未到、未就绪、已有任务冲突并关联�
     assert.ok(rows.every(r=>r.correlation_id==='cron-example'));
     assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM iperf_jobs').get().n,1);
   } finally { sqlite.close(); }
+});
+
+test('晚高峰缩短到2小时，滚动24小时最多3次且与手测保持间隔', {skip:!DatabaseSync},async()=>{
+ const {DB,sqlite}=database();
+ try {
+  await ensureIperfJobTables(DB);await ensureIperfResultsTable(DB);
+  const now=Date.parse('2026-10-17T20:30:00+08:00'),hour=3600000;
+  assert.equal(refreshPolicy(now).age_ms,2*hour);assert.equal(refreshPolicy(now-2*hour).age_ms,12*hour);
+  sqlite.exec("INSERT INTO servers VALUES ('lax');INSERT INTO iperf_schedules(server_id,updated_at,expiry_refresh_enabled) VALUES ('lax',0,1)");
+  sqlite.prepare("INSERT INTO iperf_targets VALUES ('lax','deb',?)").run(now);
+  sqlite.prepare("INSERT INTO iperf_results VALUES ('old','lax','deb','ipv4','download',?,5,5202,'ok',100,0,NULL)").run(now-3*hour);
+  const job=sqlite.prepare("INSERT INTO iperf_jobs(id,server_id,source,status,duration_seconds,created_at) VALUES (?,'lax',?,'completed',5,?)");
+  job.run('manual','manual',now-hour);
+  assert.equal(await enqueueExpiredIperfJobs(DB,now),0);
+  sqlite.exec('DELETE FROM iperf_jobs');
+  for(let i=0;i<3;i++)job.run('refresh'+i,'refresh',now-(3+i*3)*hour);
+  assert.equal(await enqueueExpiredIperfJobs(DB,now),0);
+  sqlite.prepare("DELETE FROM iperf_jobs WHERE id='refresh2'").run();
+  assert.equal(await enqueueExpiredIperfJobs(DB,now),1);
+  assert.equal(await enqueueExpiredIperfJobs(DB,now),0);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM iperf_jobs WHERE source='refresh'").get().n,3);
+ }finally{sqlite.close();}
 });

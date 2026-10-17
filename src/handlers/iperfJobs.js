@@ -107,36 +107,51 @@ export async function handleIperfAdminAction(data, env) {
   return createBadRequestResponse('unknownIperfAction');
 }
 
-// 独立于日常定时：已有测速历史到期才补测，新节点和显式关闭的节点不自动耗流量。
+// 按需补测仍受逐节点开关控制；不改变每日计划，也不为无历史节点首测。
+export function refreshPolicy(now) {
+  const hour=new Date(now+BEIJING_OFFSET).getUTCHours();
+  return {age_ms:(hour>=20 && hour<23?2:12)*3600000,min_gap_ms:2*3600000,
+    failure_gap_ms:6*3600000,window_ms:24*3600000,limit:3,duration_seconds:5};
+}
 export async function enqueueExpiredIperfJobs(db,now=Date.now()) {
   await ensureIperfJobTables(db);await ensureIperfResultsTable(db);
-  const candidates=(await db.prepare(`SELECT s.server_id,s.duration_seconds,t.last_seen,
+  const policy=refreshPolicy(now);
+  const candidates=(await db.prepare(`SELECT s.server_id,t.last_seen,
     (SELECT MIN(latest_at) FROM (SELECT MAX(tested_at) AS latest_at FROM iperf_results
       WHERE server_id=s.server_id AND source='deb' GROUP BY family)) AS oldest_family_at,
-    (SELECT MAX(created_at) FROM iperf_jobs WHERE server_id=s.server_id AND source='refresh') AS last_refresh_at
+    (SELECT MAX(created_at) FROM iperf_jobs WHERE server_id=s.server_id) AS last_attempt_at,
+    (SELECT status FROM iperf_jobs WHERE server_id=s.server_id ORDER BY created_at DESC LIMIT 1) AS last_status,
+    (SELECT COUNT(*) FROM iperf_jobs WHERE server_id=s.server_id AND source='refresh' AND created_at>?) AS refresh_count
     FROM iperf_schedules s JOIN servers v ON v.id=s.server_id
-    LEFT JOIN iperf_targets t ON t.server_id=s.server_id WHERE s.expiry_refresh_enabled=1`).all()).results||[];
+    LEFT JOIN iperf_targets t ON t.server_id=s.server_id WHERE s.expiry_refresh_enabled=1`).bind(now-policy.window_ms).all()).results||[];
   let count=0;
-  if(candidates.length)await iperfAudit(db,'expiry_refresh_checked',{checked_at:now,selection:candidates.map(c=>({server_id:c.server_id,
-    oldest_family_at:c.oldest_family_at,next_due_at:c.oldest_family_at==null?null:c.oldest_family_at+72*3600000,
-    last_refresh_at:c.last_refresh_at,target_last_seen:c.last_seen}))});
+  if(candidates.length)await iperfAudit(db,'expiry_refresh_checked',{checked_at:now,policy,selection:candidates.map(c=>({server_id:c.server_id,
+    oldest_family_at:c.oldest_family_at,next_due_at:c.oldest_family_at==null?null:c.oldest_family_at+policy.age_ms,
+    last_attempt_at:c.last_attempt_at,refresh_count:c.refresh_count,target_last_seen:c.last_seen}))});
   for(const candidate of candidates) {
-    if(candidate.oldest_family_at==null || now-candidate.oldest_family_at<=72*3600000)continue;
+    if(candidate.oldest_family_at==null || now-candidate.oldest_family_at<=policy.age_ms)continue;
+    const gap=candidate.last_status==='failed'?policy.failure_gap_ms:policy.min_gap_ms;
     const reason=!(candidate.last_seen>now-300000)?'target_not_ready'
-      :candidate.last_refresh_at!=null && now-candidate.last_refresh_at<86400000?'retry_cooldown':null;
+      :candidate.refresh_count>=policy.limit?'daily_limit'
+      :candidate.last_attempt_at!=null && now-candidate.last_attempt_at<gap?'retry_cooldown':null;
     if(reason) {
-      // 24 小时冷却内无需每分钟重复写一条相同日志。
-      if(reason!=='retry_cooldown')await iperfAudit(db,'expiry_refresh_skipped',{server_id:candidate.server_id,reason,oldest_family_at:candidate.oldest_family_at});
+      await iperfAudit(db,'expiry_refresh_skipped',{server_id:candidate.server_id,reason,oldest_family_at:candidate.oldest_family_at});
       continue;
     }
-    const slot=`expiry:${Math.floor(now/86400000)}`;
+    const slot=`refresh:${Math.floor(now/policy.min_gap_ms)}`;
+    // 所有限额在 INSERT 时再检查，防止并发 cron 或迟到的手测结果造成重复排队。
     const result=await db.prepare(`INSERT OR IGNORE INTO iperf_jobs(id,server_id,source,status,duration_seconds,scheduled_slot,created_at)
       SELECT ?,?,'refresh','queued',?,?,? WHERE NOT EXISTS(SELECT 1 FROM iperf_jobs WHERE server_id=? AND status IN ('queued','running'))
-      AND NOT EXISTS(SELECT 1 FROM iperf_jobs WHERE server_id=? AND source='refresh' AND created_at>?)
+      AND NOT EXISTS(SELECT 1 FROM iperf_jobs WHERE server_id=? AND created_at>?)
+      AND NOT EXISTS(SELECT 1 FROM iperf_jobs WHERE server_id=? AND status='failed' AND created_at>?)
+      AND (SELECT COUNT(*) FROM iperf_jobs WHERE server_id=? AND source='refresh' AND created_at>?)<?
+      AND EXISTS(SELECT 1 FROM iperf_schedules WHERE server_id=? AND expiry_refresh_enabled=1)
       AND (SELECT MIN(latest_at) FROM (SELECT MAX(tested_at) AS latest_at FROM iperf_results WHERE server_id=? AND source='deb' GROUP BY family))<?`)
-      .bind(crypto.randomUUID(),candidate.server_id,candidate.duration_seconds,slot,now,candidate.server_id,candidate.server_id,now-86400000,candidate.server_id,now-72*3600000).run();
+      .bind(crypto.randomUUID(),candidate.server_id,policy.duration_seconds,slot,now,candidate.server_id,
+        candidate.server_id,now-policy.min_gap_ms,candidate.server_id,now-policy.failure_gap_ms,
+        candidate.server_id,now-policy.window_ms,policy.limit,candidate.server_id,candidate.server_id,now-policy.age_ms).run();
     const inserted=result.meta?.changes||0;count+=inserted;
-    await iperfAudit(db,'expiry_refresh_enqueue',{server_id:candidate.server_id,oldest_family_at:candidate.oldest_family_at,inserted,slot});
+    await iperfAudit(db,'expiry_refresh_enqueue',{server_id:candidate.server_id,oldest_family_at:candidate.oldest_family_at,inserted,slot,policy});
   }
   return count;
 }

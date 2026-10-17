@@ -3,6 +3,7 @@
     <h3>iperf3 测速</h3>
     <p>测试由 deb 发起，使用目标节点的临时 5202 监听。每天可设置日间、晚高峰及可选的第二次晚高峰测试，时间均为北京时间。</p>
     <p>新 Linux 节点使用后台安装命令并以 root 安装时会自动接入测速。接入检查通过后可手动测速，定时默认关闭。</p>
+    <p>按需补测：平时超过 12 小时、晚高峰（20–23 点）超过 2 小时更新；每方向 5 秒，每台滚动 24 小时最多 3 次，最短间隔 2 小时，失败冷却 6 小时。只对已勾选且有测速历史的节点执行。</p>
     <button class="btn" :disabled="loading" @click="load">↻ 刷新任务</button>
     <p v-if="message" :class="{ 'iperf-error': error }">{{ message }}</p>
     <div class="iperf-table-wrap">
@@ -19,7 +20,7 @@
             </td>
             <td><select v-model.number="form(server.id).duration_seconds"><option :value="5">5 秒</option><option :value="10">10 秒</option><option :value="30">30 秒</option></select></td>
             <td><button class="btn" :disabled="loading || pending(server.id) || !ready(server.id)" @click="trigger(server.id)">{{ !ready(server.id) ? '未接入 deb' : pending(server.id) ? '任务进行中' : '开始测速' }}</button>
-              <label class="iperf-expiry"><input type="checkbox" v-model="form(server.id).expiry_refresh_enabled" :disabled="loading || !ready(server.id)" :aria-label="`${server.name || server.id} 到期自动补测`" @change="saveExpiry(server.id)" /> 到期自动补测（72 小时）</label>
+              <label class="iperf-expiry"><input type="checkbox" v-model="form(server.id).expiry_refresh_enabled" :disabled="loading || !ready(server.id)" :aria-label="`${server.name || server.id} 到期自动补测`" @change="saveExpiry(server.id)" /> 按需自动补测</label>
             </td>
             <td><div class="iperf-schedule">
               <label><input type="checkbox" v-model="form(server.id).enabled" /> 启用每日定时</label>
@@ -38,7 +39,7 @@
     <div class="iperf-table-wrap"><table class="iperf-table"><thead><tr><th>节点</th><th>来源</th><th>状态</th><th>创建时间</th><th>结果</th></tr></thead>
       <tbody><tr v-for="job in pagedJobs" :key="job.id">
         <td>{{ serverName(job.server_id) }}</td>
-        <td>{{ job.source === 'onboarding' ? '自动接入检查' : job.source === 'scheduled' ? '定时' : job.source === 'refresh' ? '到期补测' : '手动' }}</td>
+        <td>{{ job.source === 'onboarding' ? '自动接入检查' : job.source === 'scheduled' ? '定时' : job.source === 'refresh' ? '按需补测' : '手动' }}</td>
         <td class="iperf-job-status">{{ statusName(job.status) }}</td>
         <td class="iperf-job-time">{{ formatTime(job.created_at) }}</td>
         <td class="iperf-job-results">
@@ -160,7 +161,7 @@ async function retry(id) {
 async function saveExpiry(id) {
   const enabled=form(id).expiry_refresh_enabled
   const data=await call({action:'iperf_expiry_refresh',server_id:id,enabled})
-  if(data) message.value=enabled?'到期补测已开启：最近测速超过 72 小时后自动排队，使用已保存的测试时长；失败后至少间隔 24 小时重试。':'到期补测已关闭。'
+  if(data) message.value=enabled?'按需补测已开启：平时超过 12 小时、晚高峰超过 2 小时更新；每方向 5 秒，每台滚动 24 小时最多 3 次，最短间隔 2 小时，失败冷却 6 小时。':'到期补测已关闭。'
   else form(id).expiry_refresh_enabled=!enabled
 }
 async function save(id) {

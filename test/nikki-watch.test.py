@@ -42,8 +42,10 @@ class NikkiWatchTest(unittest.TestCase):
         activity={};cs=[{'id':'1','chains':['direct'],'download':1}]
         self.snapshot(cs,activity,1000);cs[0]['download']=2
         self.assertEqual(self.snapshot(cs,activity,1060,roots=('Proxy',))[0][0]['connections'],1)
-        self.assertEqual(self.snapshot(cs,activity,1181,roots=('Proxy',))[0][0]['connections'],0)
-        self.snapshot([],activity,1182);self.assertEqual(activity,{})
+        self.assertEqual(self.snapshot(cs,activity,1181,roots=('Proxy',))[0][0]['connections'],1)
+        self.assertEqual(self.snapshot(cs,activity,1360,roots=('Proxy',))[0][0]['connections'],1)
+        self.assertEqual(self.snapshot(cs,activity,1361,roots=('Proxy',))[0][0]['connections'],0)
+        self.snapshot([],activity,1362);self.assertEqual(activity,{})
     def test_global_direct_fallback_and_cycles(self):
         self.groups['GLOBAL']={'type':'Selector','now':'oci'}
         self.assertEqual(self.snapshot(mode='global')[0],[{'server_id':'oci','family':'ipv4','connections':0,'selected':True}])

@@ -89,7 +89,7 @@ def map_routes(connections,proxies,groups,rule_targets,mode,config,activity,now)
         # 首次见到的累计字节不能证明近期活跃；下一次实际增长后再标绿。
         touched=now if old is not None and total>old[0] else old[1] if old else None
         activity[cid]=(total,touched)
-        if touched is None or now-touched>120:continue
+        if touched is None or now-touched>300:continue
         leaf=chain[0]
         if leaf not in DIRECT:add(leaf,connected=True)
     for cid in list(activity):

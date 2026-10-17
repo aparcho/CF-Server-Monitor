@@ -23,7 +23,7 @@ Worker 采用原有估算 v0.2 公式、现有移动双栈 `node_1` / `node_2` �
 
 ```sh
 /etc/init.d/cfsm-nikki-watch status
-logread -e cfsm-nikki-watch
+logread -e python3 | grep '"phase"'
 /usr/bin/python3 /usr/libexec/cfsm-nikki-watch.py --once --dry-run
 ```
 

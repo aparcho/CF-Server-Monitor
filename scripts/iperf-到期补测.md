@@ -10,4 +10,4 @@
 - 最近任务的来源显示「到期补测」，结果照常参与评分和历史趋势。
 - `iperf_event_audit` / Worker 日志中的 `expiry_refresh_checked`、`expiry_refresh_skipped`、`expiry_refresh_enqueue` 可查询检查时间、到期时间、目标就绪和入队原因。
 
-本次仅为 DMIT.LAX 开启，其他节点的日常计划和补测开关保持原状态。关闭开关会停止后续补测，不中断已经开始的测速及其清理流程。回滚版本为本地 `backup/pre-expiry-refresh-20261017` 分支。
+本次为 DMIT.LAX、Legend.SG 开启；WAWO.HK 保持关闭，由用户按需手测。已有每日定时的节点继续按原计划运行。关闭补测开关会停止后续补测，不中断已经开始的测速及其清理流程。回滚版本为本地 `backup/pre-expiry-refresh-20261017` 分支。

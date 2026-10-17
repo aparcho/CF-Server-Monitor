@@ -48,9 +48,7 @@ async function evaluateRoute(db, route, server, now) {
   const fields=['ping_node_1','loss_node_1','ping_node_2','loss_node_2'];
   const rows=await getMetricsHistory(db,server.id,2,fields.join(','),server);
   const results=(await db.prepare('SELECT * FROM iperf_results WHERE server_id=? ORDER BY tested_at DESC LIMIT 80').bind(server.id).all()).results||[];
-  // 接入时固定对应现有移动双栈探针；未配置该族时不套用其它运营商。
-  const field=route.family==='ipv4'?'node_1':'node_2';
-  if(!server[field]) return {...estimateNetwork(route.family,[],results,now,false),reason:'对应地址族探针未配置'};
+  // 节点可继承全局探针配置，不能用 servers.node_N 为空来判定未配置；以该字段实测样本为准。
   return estimateNetwork(route.family,[scoreProbe(route.family,rows,metrics)],results,now,!metrics || now-metrics.timestamp>300000);
 }
 export async function handleNikkiReport(request,env) {

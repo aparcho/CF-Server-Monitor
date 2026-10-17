@@ -43,7 +43,7 @@ test('对应双栈探针独立计算，100%失败不伪造有效延迟，未知�
 test('上报到持久评分到公开徽章闭环：重放不重复，离开线路清空，删除节点不复活',async()=>{
   const sqlite=new DatabaseSync(':memory:');
   sqlite.exec(`CREATE TABLE servers (id TEXT PRIMARY KEY,name TEXT,is_hidden INTEGER,history_partition_id INTEGER,timestamp INTEGER,node_1 TEXT,node_2 TEXT);
-    INSERT INTO servers VALUES ('vps','测试节点',0,1,0,'cm-v4:80','cm-v6:80');
+    INSERT INTO servers VALUES ('vps','测试节点',0,1,0,NULL,NULL);
     CREATE TABLE settings (key TEXT PRIMARY KEY,value TEXT);
     CREATE TABLE metrics_history (id INTEGER PRIMARY KEY,timestamp INTEGER,ping_node_1 REAL,loss_node_1 REAL,ping_node_2 REAL,loss_node_2 REAL);`);
   const now=Date.now();
@@ -59,6 +59,7 @@ test('上报到持久评分到公开徽章闭环：重放不重复，离开线�
   let data=await (await get()).json();
   assert.equal(data.fresh,true);assert.equal(data.routes.length,1);assert.equal(data.routes[0].estimate.family,'ipv4');
   assert.equal(data.routes[0].score,null);assert.equal(data.routes[0].reason,'暂无测速');
+  assert.equal(data.routes[0].estimate.probe.lastValue,70);
   assert.equal('connections' in data.routes[0],false);
   await post({...body,observed_at:now+1,routes:[]});assert.equal((await (await get()).json()).routes.length,0);
   sqlite.prepare('DELETE FROM servers').run();

@@ -81,7 +81,7 @@ def main():
             config=json.loads(Path(args.config).read_text());payload=collect(config,activity)
             if args.dry_run:print(json.dumps(payload),flush=True)
             else:
-                req=urllib.request.Request(config['url'],data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','X-Nikki-Token':config['token']},method='POST')
+                req=urllib.request.Request(config['url'],data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','X-Nikki-Token':config['token'],'User-Agent':'CFSM-Iperf/1.0'},method='POST')
                 opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 with opener.open(req,timeout=25) as response:ack=json.load(response)
                 if ack.get('success') is not True:raise RuntimeError('report acknowledgement missing')

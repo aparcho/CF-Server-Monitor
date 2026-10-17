@@ -8,6 +8,7 @@ import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
 import { handleTheme } from './handlers/theme.js';
 import { handleNetwatchRetired } from './handlers/netwatchRetired.js';
 import { handleIperfReport, handleIperfResults } from './handlers/iperf.js';
+import { handleNikkiReport, handleNikkiStatus } from './handlers/nikki.js';
 import { handleIperfClaim, handleIperfFinish, handleIperfTargets, enqueueDueIperfJobs } from './handlers/iperfJobs.js';
 import { iperfAudit, traceIperfRequest } from './utils/iperfAudit.js';
 import { handleIperfBootstrap, handleIperfNode, handleIperfListener } from './handlers/iperfAuto.js';
@@ -230,6 +231,7 @@ export default {
       '/api/ws',
       '/api/netwatch/report',
       '/api/iperf/report',
+      '/api/nikki/report',
       '/api/iperf/jobs/claim',
       '/api/iperf/jobs/finish',
       '/api/iperf/targets',
@@ -293,6 +295,11 @@ export default {
       { method: 'POST', path: '/api/iperf/listener', handler: () => handleIperfListener(request, env) },
       { method: 'POST', path: '/api/netwatch/report', handler: () => handleNetwatchRetired(request,env) },
       { method: 'POST', path: '/api/iperf/report', handler: () => handleIperfReport(request, env) },
+      { method: 'POST', path: '/api/nikki/report', handler: () => handleNikkiReport(request, env) },
+      { method: 'GET', path: '/api/nikki/status', handler: async () => {
+        await ensureSiteSettings();
+        return handleNikkiStatus(request, env, sys);
+      }},
       { method: 'POST', path: '/api/iperf/jobs/claim', handler: () => traceIperfRequest(env.DB, '/api/iperf/jobs/claim', () => handleIperfClaim(request, env)) },
       { method: 'POST', path: '/api/iperf/jobs/finish', handler: () => traceIperfRequest(env.DB, '/api/iperf/jobs/finish', () => handleIperfFinish(request, env)) },
       { method: 'POST', path: '/api/iperf/targets', handler: () => traceIperfRequest(env.DB, '/api/iperf/targets', () => handleIperfTargets(request, env)) },

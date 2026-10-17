@@ -59,8 +59,21 @@ def entry_route(name,proxies,groups,config,path=()):
     family=endpoint_family(proxy)
     server_id=config['endpoints'].get(str(proxy.get('server','')).lower())
     if not family or not server_id:raise ValueError('unmapped route')
-    # 仅关联 Nikki 到第一个公网入口；服务器内部中转和最终出口不扩展标记。
+    # 入口只取第一个公网节点，出口角色由 exit_route 独立识别。
     return {'server_id':server_id,'family':family}
+
+
+def exit_route(name,proxies,groups,config):
+    proxy=proxies.get(name,{})
+    family=endpoint_family(proxy)
+    for relay in config.get('relay_exits',[]):
+        if (str(proxy.get('server','')).lower(),proxy.get('port'),family)==(relay['server'].lower(),relay['port'],relay['family']):
+            return {'server_id':relay['exit_server_id'],'family':relay['exit_family']}
+    # dialer-proxy 明确暴露客户端中转关系，最终代理的服务端是出口。
+    if proxy.get('dialer-proxy'):
+        sid=config['endpoints'].get(str(proxy.get('server','')).lower())
+        if sid and family:return {'server_id':sid,'family':family}
+    return None
 
 
 def map_routes(connections,proxies,groups,rule_targets,mode,config,activity,now):
@@ -70,9 +83,15 @@ def map_routes(connections,proxies,groups,rule_targets,mode,config,activity,now)
         except ValueError:
             unknown.add(name);return
         key=(entry['server_id'],entry['family'])
-        route=routes.setdefault(key,{**entry,'connections':0,'selected':False})
+        route=routes.setdefault(key,{**entry,'connections':0,'selected':False,'exit_connections':0})
         route['selected']|=selected
-        if connected:route['connections']+=1
+        if connected:
+            route['connections']+=1
+            destination=exit_route(name,proxies,groups,config)
+            if destination and destination!=entry:
+                key=(destination['server_id'],destination['family'])
+                exits=routes.setdefault(key,{**destination,'connections':0,'selected':False,'exit_connections':0})
+                exits['exit_connections']+=1
     mode=str(mode).lower()
     roots=['GLOBAL'] if mode=='global' else rule_targets if mode=='rule' else []
     for root in set(roots):
@@ -113,7 +132,7 @@ def collect(config,activity):
     connections=get('/connections')['connections']
     now=time.time()
     routes,unknown=map_routes(connections,proxy_definitions(runtime),groups,rule_targets,mode,config,activity,now)
-    return {'version':2,'observed_at':int(now*1000),'routes':routes,'unknown_count':unknown}
+    return {'version':3,'observed_at':int(now*1000),'routes':routes,'unknown_count':unknown}
 
 
 def main():
@@ -130,7 +149,7 @@ def main():
                 with opener.open(req,timeout=25) as response:ack=json.load(response)
                 if ack.get('success') is not True:raise RuntimeError('report acknowledgement missing')
                 print(json.dumps({'phase':'reported','routes':len(payload['routes']),'active':sum(r['connections']>0 for r in payload['routes']),
-                    'selected':sum(r['selected'] for r in payload['routes']),'unknown':payload['unknown_count'],'observed_at':payload['observed_at']}),flush=True)
+                    'selected':sum(r['selected'] for r in payload['routes']),'exits':sum(r['exit_connections']>0 for r in payload['routes']),'unknown':payload['unknown_count'],'observed_at':payload['observed_at']}),flush=True)
         except Exception as error:
             # 不输出请求头、运行配置或访问域名。
             print(json.dumps({'phase':'error','type':type(error).__name__}),flush=True)

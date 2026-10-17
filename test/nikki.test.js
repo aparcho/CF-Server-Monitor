@@ -82,8 +82,14 @@ test('上报到持久评分到公开徽章闭环：重放不重复，离开线�
   assert.equal(data.routes[0].low_since,null);assert.equal(data.routes[0].alerted,false);
   assert.equal((await post({...standby,observed_at:now+2,routes:[{...standby.routes[0],selected:false}]})).status,400);
   assert.equal((await post({...standby,observed_at:now+2,routes:[{...standby.routes[0],selected:undefined}]})).status,400);
-  await post({...body,observed_at:now+5,routes:[]});assert.equal((await (await get()).json()).routes.length,0);
+  const exitOnly={...body,version:3,observed_at:now+5,routes:[{server_id:'vps',family:'ipv4',connections:0,selected:false,exit_connections:1}]};
+  assert.equal((await post(exitOnly)).status,200);
+  data=await (await get()).json();assert.equal(data.routes[0].active,false);assert.equal(data.routes[0].exit_active,true);
+  assert.equal(data.routes[0].low_since,null);assert.equal(data.routes[0].alerted,false);
+  assert.equal((await post({...exitOnly,observed_at:now+6,routes:[{...exitOnly.routes[0],exit_connections:-1}]})).status,400);
+  assert.equal((await post({...exitOnly,observed_at:now+6,routes:[{...exitOnly.routes[0],exit_connections:0}]})).status,400);
+  await post({...body,observed_at:now+7,routes:[]});assert.equal((await (await get()).json()).routes.length,0);
   sqlite.prepare('DELETE FROM servers').run();
-  await post({...body,observed_at:now+6});assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM nikki_routes').get().n,0);
+  await post({...body,observed_at:now+8});assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM nikki_routes').get().n,0);
   sqlite.close();
 });

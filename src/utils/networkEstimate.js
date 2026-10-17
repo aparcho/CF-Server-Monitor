@@ -1,4 +1,4 @@
-// 从 SAO networkEstimate.ts 生成；v0.3 当前评分，两端同步更新。
+// 从 SAO networkEstimate.ts 生成；v0.4 当前评分，两端同步更新。
 const HOUR = 3600_000;
 export const CURRENT_WINDOW_MS = 10 * 60_000;
 export function recentProbe(probe, now) {
@@ -35,6 +35,17 @@ function curve(value, anchors) {
 export const latencyScore = (ms) => curve(Math.ceil(ms / 10) * 10, [[0, 100], [50, 90], [100, 75], [150, 60], [200, 45], [300, 20], [500, 0]]);
 export const bandwidthScore = (mbps) => curve(Math.log1p(mbps), [[0, 0], [1, 10], [10, 30], [50, 55], [100, 65], [300, 80], [1000, 95], [2000, 100]].map(([x, y]) => [Math.log1p(x), y]));
 export const failureScore = (pct) => curve(pct, [[0, 100], [0.1, 98], [0.5, 90], [1, 80], [2, 65], [5, 35], [10, 10], [20, 0]]);
+// 自定义轻微惩罚，不是 TCP 丢包率。传输量由 Mbps×配置时长近似，过小样本不计。
+export function retransmissionCost(row) {
+    if (!row || row.status !== "ok" || !valid(row.mbps) || !valid(row.duration_seconds) || row.duration_seconds <= 0 || !valid(row.retransmits) || !Number.isSafeInteger(row.retransmits) || row.retransmits < 0)
+        return null;
+    const estimatedMiB = row.mbps * 1_000_000 * row.duration_seconds / 8 / 1048576;
+    if (estimatedMiB < 1)
+        return null;
+    const perMiB = row.retransmits / estimatedMiB;
+    const penalty = curve(Math.log1p(perMiB), [[0, 0], [1, 0.1], [10, 0.5], [100, 2], [500, 3]].map(([x, y]) => [Math.log1p(x), y]));
+    return { count: row.retransmits, estimatedMiB, perMiB, penalty };
+}
 const variationScore = (ms) => curve(ms, [[0, 100], [5, 95], [10, 85], [20, 65], [40, 35], [80, 10], [150, 0]]);
 function median(values) {
     const sorted = [...values].sort((a, b) => a - b), middle = Math.floor(sorted.length / 2);
@@ -102,8 +113,9 @@ export function estimateNetwork(family, probes, results, now, offline) {
     const batch = latest ? familyRows.filter(r => r.run_id === latest.run_id) : [];
     const download = batch.find(r => r.direction === "download"), upload = batch.find(r => r.direction === "upload");
     const metrics = probe ? probeVariation(probe, now) : null;
-    const base = { modelVersion: 3, family, probe, testedAt: latest?.tested_at, download, upload, metrics,
+    const base = { modelVersion: 4, family, probe, testedAt: latest?.tested_at, download, upload, metrics,
         speedAgeMs: latest ? Math.max(0, now - latest.tested_at) : null, speedBasis: "latest",
+        retransmission: null,
         latency: null, loss: null, speed: null, variation: null,
         latencyMs: null, peak: null, offpeak: null, peakWeight: 0, excludedBatches: 0, score: null };
     if (offline)
@@ -145,8 +157,11 @@ export function estimateNetwork(family, probes, results, now, offline) {
     const latency = latencyScore(latencyMs), loss = failureScore(probe.loss);
     const variation = metrics?.variationMs != null ? variationScore(metrics.variationMs) : null;
     const total = 0.3 * latency + 0.2 * loss + 0.4 * speed + (variation == null ? 0 : 0.1 * variation);
-    const score = probe.loss === 100 ? 0 : Math.round(total / (variation == null ? 0.9 : 1));
+    const rd = retransmissionCost(download), ru = retransmissionCost(upload);
+    // 缺项不按零重传显示，也不额外奖分；仅对有依据的方向扣分，避免缺项放大惩罚。
+    const retransmission = rd || ru ? { penalty: 0.7 * (rd?.penalty ?? 0) + 0.3 * (ru?.penalty ?? 0), download: rd, upload: ru } : null;
+    const score = probe.loss === 100 ? 0 : Math.max(0, Math.round(total / (variation == null ? 0.9 : 1) - (retransmission?.penalty ?? 0)));
     const notes = [age > 6 * HOUR ? "带宽为较早实测参考" : age > HOUR ? "带宽非当前实测" : "", variation == null ? "近期波动样本不足" : ""].filter(Boolean);
-    return { ...base, score, latency, loss, speed, variation, latencyMs, peak, offpeak, peakWeight, excludedBatches,
-        reason: notes.length ? `暂估 · ${notes.join(" · ")}` : "当前估算 v0.3" };
+    return { ...base, score, retransmission, latency, loss, speed, variation, latencyMs, peak, offpeak, peakWeight, excludedBatches,
+        reason: notes.length ? `暂估 · ${notes.join(" · ")}` : "当前估算 v0.4" };
 }

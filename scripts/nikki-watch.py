@@ -31,30 +31,70 @@ def proxy_definitions(runtime):
     return proxies
 
 
-def map_connections(connections,proxies,endpoints,activity,now):
+DIRECT={'DIRECT','REJECT','REJECT-DROP','PASS','COMPATIBLE'}
+
+
+def selected_leaves(name,groups,path=()):
+    if name in DIRECT:return set()
+    if name in path or len(path)>=24:raise ValueError('selector cycle')
+    group=groups.get(name,{})
+    if str(group.get('type','')).lower() in ('direct','reject','rejectdrop','pass','tailscale'):return set()
+    if group.get('now'):
+        return selected_leaves(group['now'],groups,(*path,name))
+    if str(group.get('type','')).lower()=='loadbalance':
+        return set().union(*(selected_leaves(child,groups,(*path,name)) for child in group.get('all',[])))
+    if group.get('all'):raise ValueError('group selection missing')
+    return {name}
+
+
+def entry_route(name,proxies,groups,config,path=()):
+    if name in path or len(path)>=24:raise ValueError('dialer cycle')
+    proxy=proxies.get(name)
+    if not proxy:raise ValueError('proxy definition missing')
+    dialer=proxy.get('dialer-proxy')
+    if dialer:
+        leaves=selected_leaves(dialer,groups)
+        if len(leaves)!=1:raise ValueError('ambiguous dialer')
+        return entry_route(next(iter(leaves)),proxies,groups,config,(*path,name))
+    family=endpoint_family(proxy)
+    server_id=config['endpoints'].get(str(proxy.get('server','')).lower())
+    if not family or not server_id:raise ValueError('unmapped route')
+    # 仅关联 Nikki 到第一个公网入口；服务器内部中转和最终出口不扩展标记。
+    return {'server_id':server_id,'family':family}
+
+
+def map_routes(connections,proxies,groups,rule_targets,mode,config,activity,now):
     routes={};unknown=set();live=set()
+    def add(name,selected=False,connected=False):
+        try:entry=entry_route(name,proxies,groups,config)
+        except ValueError:
+            unknown.add(name);return
+        key=(entry['server_id'],entry['family'])
+        route=routes.setdefault(key,{**entry,'connections':0,'selected':False})
+        route['selected']|=selected
+        if connected:route['connections']+=1
+    mode=str(mode).lower()
+    roots=['GLOBAL'] if mode=='global' else rule_targets if mode=='rule' else []
+    for root in set(roots):
+        try:leaves=selected_leaves(root,groups)
+        except ValueError:
+            unknown.add(root);continue
+        for name in leaves:add(name,selected=True)
     for connection in connections:
         cid=connection.get('id');chain=connection.get('chains',[])
         if not cid or not chain:continue
         live.add(cid)
         total=int(connection.get('upload',0))+int(connection.get('download',0))
         old=activity.get(cid)
-        touched=now if old is None or total>old[0] else old[1]
+        # 首次见到的累计字节不能证明近期活跃；下一次实际增长后再标绿。
+        touched=now if old is not None and total>old[0] else old[1] if old else None
         activity[cid]=(total,touched)
-        if now-touched>120:continue
+        if touched is None or now-touched>120:continue
         leaf=chain[0]
-        if leaf in ('DIRECT','REJECT','REJECT-DROP','PASS'):continue
-        proxy=proxies.get(leaf)
-        family=endpoint_family(proxy) if proxy else None
-        server_id=endpoints.get(str(proxy.get('server','')).lower()) if proxy else None
-        # 中转只标记首跳入口，不把最终出口的分数冒充完整中转链路。
-        if not family or not server_id or proxy.get('dialer-proxy'):
-            unknown.add(leaf);continue
-        key=(server_id,family)
-        routes[key]=routes.get(key,0)+1
+        if leaf not in DIRECT:add(leaf,connected=True)
     for cid in list(activity):
         if cid not in live:del activity[cid]
-    return [{'server_id':sid,'family':family,'connections':n} for (sid,family),n in sorted(routes.items())],len(unknown)
+    return [row for _,row in sorted(routes.items())],len(unknown)
 
 
 def collect(config,activity):
@@ -63,13 +103,17 @@ def collect(config,activity):
     controller=str(runtime['external-controller'])
     # 管理 API 只连本机，不把现有 controller 暴露出去。
     port=int(controller.rsplit(':',1)[1])
-    req=urllib.request.Request(f'http://127.0.0.1:{port}/connections',headers={'Authorization':'Bearer '+str(runtime.get('secret',''))})
     # 不继承 HTTP_PROXY，避免管理请求经代理发出。
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(req,timeout=5) as response:connections=json.load(response)['connections']
+    def get(path):
+        req=urllib.request.Request(f'http://127.0.0.1:{port}'+path,headers={'Authorization':'Bearer '+str(runtime.get('secret',''))})
+        with opener.open(req,timeout=5) as response:return json.load(response)
+    groups=get('/proxies')['proxies'];mode=get('/configs')['mode']
+    rule_targets=[r['proxy'] for r in get('/rules').get('rules',[])] if str(mode).lower()=='rule' else []
+    connections=get('/connections')['connections']
     now=time.time()
-    routes,unknown=map_connections(connections,proxy_definitions(runtime),config['endpoints'],activity,now)
-    return {'observed_at':int(now*1000),'routes':routes,'unknown_count':unknown}
+    routes,unknown=map_routes(connections,proxy_definitions(runtime),groups,rule_targets,mode,config,activity,now)
+    return {'version':2,'observed_at':int(now*1000),'routes':routes,'unknown_count':unknown}
 
 
 def main():
@@ -85,7 +129,8 @@ def main():
                 opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 with opener.open(req,timeout=25) as response:ack=json.load(response)
                 if ack.get('success') is not True:raise RuntimeError('report acknowledgement missing')
-                print(json.dumps({'phase':'reported','routes':len(payload['routes']),'unknown':payload['unknown_count'],'observed_at':payload['observed_at']}),flush=True)
+                print(json.dumps({'phase':'reported','routes':len(payload['routes']),'active':sum(r['connections']>0 for r in payload['routes']),
+                    'selected':sum(r['selected'] for r in payload['routes']),'unknown':payload['unknown_count'],'observed_at':payload['observed_at']}),flush=True)
         except Exception as error:
             # 不输出请求头、运行配置或访问域名。
             print(json.dumps({'phase':'error','type':type(error).__name__}),flush=True)

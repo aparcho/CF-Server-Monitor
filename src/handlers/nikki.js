@@ -68,8 +68,8 @@ export async function handleNikkiReport(request,env) {
   if(new Set(body.routes.map(r=>`${r.server_id}/${r.family}`)).size!==body.routes.length) return bad('duplicateNikkiRoute');
   await ensureNikkiTables(env.DB);await ensureIperfResultsTable(env.DB);
   const previous=(await env.DB.prepare('SELECT * FROM nikki_routes').all()).results||[];
-  const claimed=await env.DB.prepare(`INSERT INTO nikki_monitor VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET observed_at=excluded.observed_at,unknown_count=excluded.unknown_count WHERE excluded.observed_at>nikki_monitor.observed_at`).bind(body.observed_at,body.unknown_count).run();
-  if(!claimed.meta.changes) return ok({success:true,replayed:true});
+  const published=await env.DB.prepare('SELECT * FROM nikki_monitor WHERE id=1').first();
+  if(published && published.observed_at>=body.observed_at) return ok({success:true,replayed:true});
   const settings=await loadSettings(env.DB),evaluated=[];
   for(const route of body.routes) {
     const server=await env.DB.prepare('SELECT * FROM servers WHERE id=?').bind(route.server_id).first();
@@ -90,21 +90,29 @@ export async function handleNikkiReport(request,env) {
     const publicEstimate={...estimate,probe:estimate.probe?{taskName:estimate.probe.taskName,lastValue:estimate.probe.lastValue,loss:estimate.probe.loss}:undefined};
     evaluated.push({...route,selected:version===2 && route.selected?1:0,score:estimate.score,reason:estimate.reason,estimate:JSON.stringify(publicEstimate),...state,notification_error});
   }
-  const statements=evaluated.map(r=>env.DB.prepare(`INSERT INTO nikki_routes (server_id,family,observed_at,connections,score,reason,estimate,low_since,alerted,evaluated_at,notification_error,selected)
-    SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM servers WHERE id=?)
+  // D1 batch 是事务：版本与路线一起发布，评分期间仍可读取上次完整快照。
+  // 并发旧报告不得覆盖更新的版本、路线或清理结果。
+  const statements=[...evaluated.map(r=>env.DB.prepare(`INSERT INTO nikki_routes (server_id,family,observed_at,connections,score,reason,estimate,low_since,alerted,evaluated_at,notification_error,selected)
+    SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM servers WHERE id=?) AND COALESCE((SELECT observed_at FROM nikki_monitor WHERE id=1),0)<?
     ON CONFLICT(server_id,family) DO UPDATE SET observed_at=excluded.observed_at,connections=excluded.connections,score=excluded.score,reason=excluded.reason,estimate=excluded.estimate,low_since=excluded.low_since,alerted=excluded.alerted,evaluated_at=excluded.evaluated_at,notification_error=excluded.notification_error,selected=excluded.selected`)
-    .bind(r.server_id,r.family,body.observed_at,r.connections,r.score,r.reason,r.estimate,r.low_since,r.alerted,now,r.notification_error,r.selected,r.server_id));
-  statements.push(env.DB.prepare('DELETE FROM nikki_routes WHERE observed_at<?').bind(body.observed_at));
-  await env.DB.batch(statements);
+    .bind(r.server_id,r.family,body.observed_at,r.connections,r.score,r.reason,r.estimate,r.low_since,r.alerted,now,r.notification_error,r.selected,r.server_id,body.observed_at))];
+  statements.push(env.DB.prepare('DELETE FROM nikki_routes WHERE observed_at<? AND COALESCE((SELECT observed_at FROM nikki_monitor WHERE id=1),0)<?').bind(body.observed_at,body.observed_at));
+  statements.push(env.DB.prepare(`INSERT INTO nikki_monitor VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET observed_at=excluded.observed_at,unknown_count=excluded.unknown_count WHERE excluded.observed_at>nikki_monitor.observed_at`).bind(body.observed_at,body.unknown_count));
+  const committed=await env.DB.batch(statements);
+  if(!committed.at(-1).meta.changes)return ok({success:true,replayed:true});
   console.log('[Nikki] report',JSON.stringify({observed_at:body.observed_at,routes:evaluated.length,active:evaluated.filter(r=>r.connections>0).length,selected:evaluated.filter(r=>r.selected).length,unknown:body.unknown_count,alerts:evaluated.filter(r=>r.fire).length}));
   return ok({success:true,routes:evaluated.length,notifications_configured:settings.notification_webhook_enabled==='true' || !!settings.tg_bot_token});
 }
 export async function handleNikkiStatus(request,env,sys) {
   if(sys.is_public!=='true' && !await checkAuth(request,env,sys))return denied();
   await ensureNikkiTables(env.DB);
-  const meta=await env.DB.prepare('SELECT * FROM nikki_monitor WHERE id=1').first();
+  const [metadata,snapshot]=await env.DB.batch([
+    env.DB.prepare('SELECT * FROM nikki_monitor WHERE id=1'),
+    env.DB.prepare(`SELECT r.* FROM nikki_routes r JOIN servers s ON s.id=r.server_id WHERE r.observed_at=(SELECT observed_at FROM nikki_monitor WHERE id=1) AND COALESCE(s.is_hidden,0) NOT IN (1,'1')`)
+  ]);
+  const meta=metadata.results?.[0];
   const fresh=!!meta && Date.now()-meta.observed_at<=POLICY.stale_ms;
   // 仅输出节点和地址族，不暴露访问域名、客户端、策略组或代理凭据；隐藏节点仍受站点权限约束。
-  const rows=fresh?(await env.DB.prepare(`SELECT r.* FROM nikki_routes r JOIN servers s ON s.id=r.server_id WHERE r.observed_at=? AND COALESCE(s.is_hidden,0) NOT IN (1,'1')`).bind(meta.observed_at).all()).results||[]:[];
+  const rows=fresh?snapshot.results||[]:[];
   return ok({observed_at:meta?.observed_at||null,fresh,policy:POLICY,routes:rows.map(({server_id,family,score,reason,estimate,low_since,alerted,notification_error,evaluated_at,connections,selected})=>({server_id,family,score,reason,estimate:JSON.parse(estimate||'null'),low_since,alerted:!!alerted,active:connections>0,selected:!!selected,notification_error,evaluated_at}))},{'Cache-Control':'no-store'});
 }

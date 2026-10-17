@@ -34,7 +34,13 @@
         </tbody>
       </table>
     </div>
-    <h4>最近任务</h4>
+    <div class="iperf-jobs-heading">
+      <h4>最近任务</h4>
+      <label>节点 <select v-model="jobServerId" aria-label="最近任务节点筛选">
+        <option value="">全部节点</option>
+        <option v-for="server in jobServers" :key="server.id" :value="server.id">{{ server.name || server.id }}</option>
+      </select></label>
+    </div>
     <p class="iperf-result-hint">下载、上传均以 deb 为视角；单位 Mbps，括号内为 TCP 重传次数。</p>
     <div class="iperf-table-wrap"><table class="iperf-table"><thead><tr><th>节点</th><th>来源</th><th>状态</th><th>创建时间</th><th>结果</th></tr></thead>
       <tbody><tr v-for="job in pagedJobs" :key="job.id">
@@ -51,10 +57,10 @@
           <div v-if="job.status === 'failed'" class="iperf-error iperf-job-error">{{ job.error || '失败' }}</div>
           <template v-else-if="!job.results?.length">{{ job.source === 'onboarding' && job.status === 'completed' ? '公网检查通过' : job.result_count != null ? `${job.result_count} 项结果 · 暂无明细` : '—' }}</template>
         </td>
-      </tr></tbody>
+      </tr><tr v-if="!filteredJobs.length"><td colspan="5" class="iperf-empty">{{ jobServerId ? '该节点暂无最近任务' : '暂无最近任务' }}</td></tr></tbody>
     </table></div>
     <nav class="iperf-pagination" aria-label="最近任务分页">
-      <span>共 {{ jobs.length }} 条 · 每页 {{ jobPageSize }} 条</span>
+      <span>共 {{ filteredJobs.length }} 条 · 每页 {{ jobPageSize }} 条</span>
       <button v-if="jobPage > 1" class="btn" @click="jobPage = 1">最新任务</button>
       <button class="btn" :disabled="jobPage <= 1" @click="jobPage--">上一页</button>
       <span>第 {{ jobPage }} / {{ jobPages }} 页</span>
@@ -71,8 +77,16 @@ const props = defineProps({ activeTab: String, servers: { type: Array, default: 
 const jobs = ref([])
 const jobPageSize = 5
 const jobPage = ref(1)
-const jobPages = computed(() => Math.max(1, Math.ceil(jobs.value.length / jobPageSize)))
-const pagedJobs = computed(() => jobs.value.slice((jobPage.value - 1) * jobPageSize, jobPage.value * jobPageSize))
+const jobServerId = ref('')
+const jobServers = computed(() => {
+  const nodes = new Map(props.servers.map(server => [server.id, server]))
+  for (const job of jobs.value) if (!nodes.has(job.server_id)) nodes.set(job.server_id, { id: job.server_id })
+  return [...nodes.values()]
+})
+const filteredJobs = computed(() => jobServerId.value ? jobs.value.filter(job => job.server_id === jobServerId.value) : jobs.value)
+const jobPages = computed(() => Math.max(1, Math.ceil(filteredJobs.value.length / jobPageSize)))
+const pagedJobs = computed(() => filteredJobs.value.slice((jobPage.value - 1) * jobPageSize, jobPage.value * jobPageSize))
+watch(jobServerId, () => { jobPage.value = 1 })
 watch(jobPages, pages => { jobPage.value = Math.min(jobPage.value, pages) })
 const readyTargets = ref([])
 const enrollments = ref([])
@@ -149,6 +163,7 @@ async function load(options = {}) {
 async function trigger(id) {
   const data = await call({ action: 'iperf_trigger', server_id: id, duration_seconds: form(id).duration_seconds })
   if (data) {
+    if (jobServerId.value) jobServerId.value = id
     jobPage.value = 1
     jobs.value = [{ id: data.id, server_id: id, source: 'manual', status: 'queued', created_at: Date.now() }, ...jobs.value]
     message.value = '任务已排队，deb 将在下一次轮询时执行。'
@@ -176,6 +191,7 @@ async function save(id) {
 }
 watch(() => [props.activeTab, props.selectedApiIndex], ([tab]) => {
   ++loadSequence
+  jobServerId.value = ''
   jobPage.value = 1
   stopPolling()
   if (tab === 'iperf') load()
@@ -195,6 +211,10 @@ onBeforeUnmount(() => { disposed = true; ++loadSequence; stopPolling() })
 .iperf-expiry { display:flex; align-items:center; gap:6px; margin-top:8px; font-size:12px; white-space:nowrap; }
 .iperf-schedule label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .iperf-table input[type=time], .iperf-table select { color: inherit; background: transparent; border: 1px solid #7778; border-radius: 4px; padding: 5px; }
+.iperf-jobs-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.iperf-jobs-heading label { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; }
+.iperf-jobs-heading select { color: inherit; background: transparent; border: 1px solid #7778; border-radius: 4px; padding: 5px; max-width: 240px; }
+.iperf-empty { opacity: .7; }
 .iperf-job-status, .iperf-job-time { white-space: nowrap; }
 .iperf-job-results { min-width: 380px; font-variant-numeric: tabular-nums; }
 .iperf-result-family { display: grid; grid-template-columns: 44px minmax(145px, 1fr) minmax(145px, 1fr); gap: 8px; line-height: 1.7; white-space: nowrap; }

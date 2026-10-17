@@ -77,3 +77,25 @@ test('最近任务每页5条，翻页不影响后台测速轮询，刷新后收�
     count=0;await view.state().load();await flush();assert.equal(view.state().jobPages,1);assert.equal(view.state().pagedJobs.length,0);
   } finally {view.app.unmount();delete globalThis.__iperfPanelTestApi}
 });
+
+test('节点筛选先于分页，保留后台轮询及未保存编辑，切换节点回首页',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  let calls=0;
+  globalThis.__iperfPanelTestApi=async()=>{calls++;return {data:{jobs:Array.from({length:18},(_,i)=>({id:'job-'+i,server_id:i%2?'b':'a',status:i===1?'running':'completed'})),schedules:[{server_id:'a',time_beijing:'22:00'}]}}};
+  const view=mount();
+  try {
+    view.props.servers=[{id:'a',name:'节点 A'},{id:'b',name:'节点 B'},{id:'c',name:'节点 C'}];
+    await flush();view.state().jobPage=3;
+    view.state().jobServerId='a';await flush();
+    assert.equal(view.state().jobPage,1);assert.equal(view.state().filteredJobs.length,9);assert.equal(view.state().jobPages,2);
+    assert.deepEqual(view.state().pagedJobs.map(j=>j.id),['job-0','job-2','job-4','job-6','job-8']);
+    view.state().forms.a.time_beijing='20:15';view.state().jobPage=2;
+    // 筛掉的节点仍在运行，不能因筛选停止轮询。
+    t.mock.timers.tick(5000);await flush();assert.equal(calls,2);
+    assert.equal(view.state().jobServerId,'a');assert.equal(view.state().jobPage,2);assert.equal(view.state().forms.a.time_beijing,'20:15');
+    view.state().jobServerId='b';await flush();assert.equal(view.state().jobPage,1);assert.equal(view.state().pagedJobs[0].id,'job-1');
+    view.state().jobServerId='c';await flush();assert.equal(view.state().filteredJobs.length,0);assert.equal(view.state().jobPages,1);
+    view.state().jobServerId='';await flush();assert.equal(view.state().filteredJobs.length,18);
+    view.state().jobServerId='b';view.props.selectedApiIndex=1;await flush();assert.equal(view.state().jobServerId,'');
+  }finally{view.app.unmount();delete globalThis.__iperfPanelTestApi}
+});

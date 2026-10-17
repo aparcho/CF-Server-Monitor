@@ -1,3 +1,4 @@
+import { isDatabaseQuotaError } from './databaseAvailability.js';
 /**
  * 缓存管理模块
  * 集中管理所有内存缓存，包括：
@@ -60,6 +61,7 @@ export async function getAllServers(db, includeHidden = true) {
     return filterServersByHidden(results, includeHidden);
   } catch (e) {
     debug('获取服务器列表失败:', e);
+    if (isDatabaseQuotaError(e)) throw e;
     return filterServersByHidden(serversListCache?.data, includeHidden);
   }
 }

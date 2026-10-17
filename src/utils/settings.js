@@ -1,3 +1,4 @@
+import { isDatabaseQuotaError } from './databaseAvailability.js';
 import {
   DEFAULT_SITE_TITLE,
   JWT_SECRET_MIN_LENGTH,
@@ -677,6 +678,7 @@ export async function loadSiteSettings(db, options = {}) {
     result.traffic_alert_threshold = normalizeTrafficAlertThreshold(result.traffic_alert_threshold);
   } catch (e) {
     console.error('加载站点设置失败:', e);
+    if (isDatabaseQuotaError(e)) throw e;
   }
 
   cachedSiteSettings = result;
@@ -723,6 +725,7 @@ export async function loadAppearanceOptions(db) {
     result.default_language = normalizeDefaultLanguage(result.default_language);
   } catch (e) {
     console.error('加载外观设置失败:', e);
+    if (isDatabaseQuotaError(e)) throw e;
   }
 
   cachedAppearanceOptions = result;

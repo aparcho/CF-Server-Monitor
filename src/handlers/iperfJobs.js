@@ -170,6 +170,7 @@ export async function enqueueDueIperfJobs(db, now = Date.now(), event = {}) {
     id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL, scheduled_at INTEGER, cron TEXT,
     matched_minute TEXT NOT NULL, snapshot TEXT NOT NULL, enqueued INTEGER NOT NULL DEFAULT 0, error TEXT
   )`).run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_iperf_dispatch_time ON iperf_dispatch_audit(observed_at)').run();
   const auditId = crypto.randomUUID();
   await db.prepare(`INSERT INTO iperf_dispatch_audit (id,observed_at,scheduled_at,cron,matched_minute,snapshot)
     VALUES (?,?,?,?,?,?)`).bind(auditId,now,event.scheduledTime ?? null,event.cron || '',`${date}T${time}+08:00`,
@@ -201,7 +202,6 @@ export async function enqueueDueIperfJobs(db, now = Date.now(), event = {}) {
   } finally {
     await db.prepare('UPDATE iperf_dispatch_audit SET enqueued=? WHERE id=?').bind(enqueued,auditId).run();
   }
-  await db.prepare('DELETE FROM iperf_dispatch_audit WHERE observed_at<?').bind(now-7*86400_000).run();
 }
 
 function runnerAuthorized(request, env) {

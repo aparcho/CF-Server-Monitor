@@ -1,3 +1,4 @@
+import { isDatabaseQuotaError, databaseQuotaResponse } from './utils/databaseAvailability.js';
 import { initDatabase, weeklyCleanup, getMetricsHistory, clearHistory } from './database/schema.js';
 import { checkOfflineNodes, checkExpiringServers, checkResourceAlerts } from './services/notification.js';
 import { updateDatabase } from './database/updateDatabase.js';
@@ -189,6 +190,7 @@ async function fetchHistoryData(env, request, id, hours, columns, sys = null) {
 
 export default {
   async fetch(request, env, ctx) {
+    try {
     setDebug(env.DEBUG);
 
     const url = new URL(request.url);
@@ -492,6 +494,10 @@ export default {
     const fullSettings = await loadSettings(env.DB);
     const frontendResponse = await serveFrontend(request, env, fullSettings);
     return applyCors(frontendResponse, request, corsAllowedOrigins);
+    } catch (error) {
+      if (isDatabaseQuotaError(error)) return applyCors(databaseQuotaResponse(request), request, getCorsAllowedOrigins(env));
+      throw error;
+    }
   },
 
   async scheduled(event, env, ctx) {
@@ -541,6 +547,7 @@ export default {
     if (cron === '0 * * * *') {
       const cutoff = Date.now() - 7 * 86400_000;
       await env.DB.prepare('DELETE FROM iperf_event_audit WHERE observed_at<?').bind(cutoff).run();
+      await env.DB.prepare('DELETE FROM iperf_dispatch_audit WHERE observed_at<?').bind(cutoff).run();
     }
     } catch (error) {
       await iperfAudit(env.DB, 'cron_error', { cron, error: String(error.message || error).slice(0, 500) }, auditId);

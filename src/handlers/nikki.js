@@ -37,16 +37,16 @@ export function advanceAlert(previous, score, now) {
 }
 export function scoreProbe(family, rows, metrics) {
   const field=family==='ipv4'?'node_1':'node_2';
-  const samples=[],emptyTimes=[];
+  const samples=[],emptyTimes=[],lossSamples=[];
   let lossSum=0,count=0;
   for(const row of rows) {
     const value=row[`ping_${field}`], loss=row[`loss_${field}`];
-    if(typeof loss==='number' && Number.isFinite(loss) && loss>=0 && loss<=100) {lossSum+=loss;count++;}
+    if(typeof loss==='number' && Number.isFinite(loss) && loss>=0 && loss<=100) {lossSum+=loss;count++;lossSamples.push({time:row.timestamp,loss});}
     if(typeof value==='number' && Number.isFinite(value) && value>=0 && loss!==100) samples.push({time:row.timestamp,value,loss});
     else emptyTimes.push(row.timestamp);
   }
   return {taskName:family==='ipv4'?'移动V4':'移动V6',lastValue:typeof metrics?.[`ping_${field}`]==='number'?metrics[`ping_${field}`]:null,
-    loss:count?lossSum/count:null,samples,emptyTimes,loadState:'ready'};
+    loss:count?lossSum/count:null,samples,emptyTimes,lossSamples,loadState:'ready'};
 }
 async function evaluateRoute(db, route, server, now) {
   const metrics=await getLatestMetrics(db,server.id,server);

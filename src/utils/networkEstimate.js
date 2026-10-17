@@ -1,5 +1,20 @@
-// 从 SAO networkEstimate.ts 生成，保持 v0.2 评分公式；更新公式时同步导出。
+// 从 SAO networkEstimate.ts 生成；v0.3 当前评分，两端同步更新。
 const HOUR = 3600_000;
+export const CURRENT_WINDOW_MS = 10 * 60_000;
+export function recentProbe(probe, now) {
+    const inside = (time) => valid(time) && time >= now - CURRENT_WINDOW_MS && time <= now;
+    const samples = probe.samples?.filter(row => inside(row.time));
+    const losses = (probe.lossSamples ?? probe.samples)?.filter(row => inside(row.time));
+    let total = 0, sum = 0;
+    for (const row of losses || [])
+        if (valid(row.loss) && row.loss >= 0 && row.loss <= 100) {
+            const count = valid(row.count) && row.count > 0 ? Math.min(60, row.count) : 1;
+            sum += row.loss * count;
+            total += count;
+        }
+    return { ...probe, samples, emptyTimes: probe.emptyTimes?.filter(inside),
+        loss: total ? sum / total : !probe.samples?.length && !probe.lossSamples?.length ? probe.loss : null };
+}
 const valid = (value) => typeof value === "number" && Number.isFinite(value);
 export function aimPoints(value, thresholds, points) {
     let i = 0;
@@ -32,13 +47,13 @@ export function isPeakTime(time) {
 export function probeVariation(probe, now) {
     const samples = new Map();
     for (const row of probe.samples || []) {
-        if (row.time < now - 2 * HOUR || row.time > now || !valid(row.time))
+        if (row.time < now - CURRENT_WINDOW_MS || row.time > now || !valid(row.time))
             continue;
         samples.set(row.time, { time: row.time, value: valid(row.value) && row.value >= 0 && row.loss !== 100 ? row.value : null,
             count: valid(row.count) && row.count > 0 ? Math.min(60, row.count) : 1 });
     }
     for (const time of probe.emptyTimes || [])
-        if (time >= now - 2 * HOUR && time <= now)
+        if (time >= now - CURRENT_WINDOW_MS && time <= now)
             samples.set(time, { time, value: null, count: 1 });
     const ordered = [...samples.values()].sort((a, b) => a.time - b.time);
     const values = ordered.filter((row) => row.value != null);
@@ -80,13 +95,15 @@ function summarize(batches) {
         upload: median(daily.map(rows => median(rows.map(row => row.upload.status === 'ok' ? row.upload.mbps : 0)))) };
 }
 export function estimateNetwork(family, probes, results, now, offline) {
-    const probe = probes.find(p => new RegExp(`(?:IP)?V${family === "ipv4" ? 4 : 6}(?:\\b|$)`, "i").test(p.taskName));
+    const sourceProbe = probes.find(p => new RegExp(`(?:IP)?V${family === "ipv4" ? 4 : 6}(?:\\b|$)`, "i").test(p.taskName));
+    const probe = sourceProbe ? recentProbe(sourceProbe, now) : undefined;
     const familyRows = results.filter(r => r.family === family && valid(r.tested_at) && r.tested_at <= now + 60_000);
     const latest = [...familyRows].sort((a, b) => b.tested_at - a.tested_at)[0];
     const batch = latest ? familyRows.filter(r => r.run_id === latest.run_id) : [];
     const download = batch.find(r => r.direction === "download"), upload = batch.find(r => r.direction === "upload");
     const metrics = probe ? probeVariation(probe, now) : null;
-    const base = { family, probe, testedAt: latest?.tested_at, download, upload, metrics,
+    const base = { modelVersion: 3, family, probe, testedAt: latest?.tested_at, download, upload, metrics,
+        speedAgeMs: latest ? Math.max(0, now - latest.tested_at) : null, speedBasis: "latest",
         latency: null, loss: null, speed: null, variation: null,
         latencyMs: null, peak: null, offpeak: null, peakWeight: 0, excludedBatches: 0, score: null };
     if (offline)
@@ -121,16 +138,15 @@ export function estimateNetwork(family, probes, results, now, offline) {
             excludedBatches++;
     }
     const peak = summarize(batches.filter(b => isPeakTime(b.time))), offpeak = summarize(batches.filter(b => !isPeakTime(b.time)));
-    const peakWeight = peak ? offpeak ? 0.7 : 1 : 0;
-    let speed = peak && offpeak ? 0.7 * peak.score + 0.3 * offpeak.score : (peak || offpeak).score;
-    if (download.status === "no_response" || upload.status === "no_response")
-        speed = Math.min(speed, scoreSpeed(download, upload));
-    const latencyMs = metrics && metrics.samples >= 5 && metrics.p50 != null && metrics.p95 != null ? 0.7 * metrics.p50 + 0.3 * metrics.p95 : probe.lastValue ?? 500;
+    // 徽章回答当前状态：仅用时间最近一批，历史晚高峰只作参考，不混入当前分数。
+    const peakWeight = 0;
+    const speed = scoreSpeed(download, upload);
+    const latencyMs = metrics && metrics.samples >= 3 && metrics.p95 != null && probe.lastValue != null ? 0.7 * probe.lastValue + 0.3 * metrics.p95 : probe.lastValue ?? 500;
     const latency = latencyScore(latencyMs), loss = failureScore(probe.loss);
     const variation = metrics?.variationMs != null ? variationScore(metrics.variationMs) : null;
     const total = 0.3 * latency + 0.2 * loss + 0.4 * speed + (variation == null ? 0 : 0.1 * variation);
     const score = probe.loss === 100 ? 0 : Math.round(total / (variation == null ? 0.9 : 1));
-    const notes = [age > 24 * HOUR ? "测速较旧" : "", !peak ? "暂无晚高峰样本" : "", !offpeak ? "暂无闲时样本" : "", variation == null ? "波动样本不足" : "", excludedBatches ? `${excludedBatches} 批失败或缺项未计带宽` : ""].filter(Boolean);
+    const notes = [age > 6 * HOUR ? "带宽为较早实测参考" : age > HOUR ? "带宽非当前实测" : "", variation == null ? "近期波动样本不足" : ""].filter(Boolean);
     return { ...base, score, latency, loss, speed, variation, latencyMs, peak, offpeak, peakWeight, excludedBatches,
-        reason: notes.length ? `暂估 · ${notes.join(" · ")}` : "估算 v0.2" };
+        reason: notes.length ? `暂估 · ${notes.join(" · ")}` : "当前估算 v0.3" };
 }

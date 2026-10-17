@@ -1,4 +1,4 @@
-// 从 SAO networkEstimate.ts 生成；v0.5 当前评分，两端同步更新。
+// 从 SAO networkEstimate.ts 生成；v0.6 当前评分，两端同步更新。
 const HOUR = 3600_000;
 export const CURRENT_WINDOW_MS = 10 * 60_000;
 export function recentProbe(probe, now) {
@@ -33,7 +33,7 @@ function curve(value, anchors) {
     return anchors[anchors.length - 1][1];
 }
 export const latencyScore = (ms) => curve(Math.ceil(ms / 10) * 10, [[0, 100], [50, 90], [100, 75], [150, 60], [200, 45], [300, 20], [500, 0]]);
-export const bandwidthScore = (mbps) => curve(Math.log1p(mbps), [[0, 0], [1, 5], [10, 15], [50, 30], [100, 40], [200, 55], [300, 65], [500, 80], [1000, 95], [2000, 100]].map(([x, y]) => [Math.log1p(x), y]));
+export const bandwidthScore = (mbps) => curve(Math.log1p(mbps), [[0, 0], [1, 1], [10, 5], [50, 10], [100, 20], [200, 40], [300, 60], [500, 80], [1000, 95], [2000, 100]].map(([x, y]) => [Math.log1p(x), y]));
 export const failureScore = (pct) => curve(pct, [[0, 100], [0.1, 98], [0.5, 90], [1, 80], [2, 65], [5, 35], [10, 10], [20, 0]]);
 // 自定义轻微惩罚，不是 TCP 丢包率。传输量由 Mbps×配置时长近似，过小样本不计。
 export function retransmissionCost(row) {
@@ -113,7 +113,7 @@ export function estimateNetwork(family, probes, results, now, offline) {
     const batch = latest ? familyRows.filter(r => r.run_id === latest.run_id) : [];
     const download = batch.find(r => r.direction === "download"), upload = batch.find(r => r.direction === "upload");
     const metrics = probe ? probeVariation(probe, now) : null;
-    const base = { modelVersion: 5, family, probe, testedAt: latest?.tested_at, download, upload, metrics,
+    const base = { modelVersion: 6, family, probe, testedAt: latest?.tested_at, download, upload, metrics,
         speedAgeMs: latest ? Math.max(0, now - latest.tested_at) : null, speedBasis: "latest",
         retransmission: null,
         latency: null, loss: null, speed: null, variation: null,
@@ -163,5 +163,5 @@ export function estimateNetwork(family, probes, results, now, offline) {
     const score = probe.loss === 100 ? 0 : Math.max(0, Math.round(total / (variation == null ? 0.9 : 1) - (retransmission?.penalty ?? 0)));
     const notes = [age > 6 * HOUR ? "带宽为较早实测参考" : age > HOUR ? "带宽非当前实测" : "", variation == null ? "近期波动样本不足" : ""].filter(Boolean);
     return { ...base, score, retransmission, latency, loss, speed, variation, latencyMs, peak, offpeak, peakWeight, excludedBatches,
-        reason: notes.length ? `暂估 · ${notes.join(" · ")}` : "当前估算 v0.5" };
+        reason: notes.length ? `暂估 · ${notes.join(" · ")}` : "当前估算 v0.6" };
 }

@@ -10,6 +10,10 @@ on:
       - 'LICENSE'
   workflow_dispatch:
 
+concurrency:
+  group: cfsm-production-deploy
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -43,6 +47,11 @@ jobs:
 
       - name: 📦 Install dependencies
         run: npm install
+
+      - name: ✅ 验证业务与测速控制链
+        run: |
+          npm test
+          npm run test:control
 
       - name: 🏗️ Build frontend assets
         run: npm run build:frontend

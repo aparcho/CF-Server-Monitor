@@ -126,7 +126,7 @@ test('节点心跳预算：热请求不重复建表，只读取公网地址，�
   const queries=[],prepare=env.DB.prepare.bind(env.DB);env.DB.prepare=sql=>{queries.push(sql);return prepare(sql)};
   const response=await handleIperfNode(request('/node',{id:'new',ipv4:'8.8.8.8',ipv6:'2001:4860:4860::8888'},{'X-Iperf-Node-Token':boot.token}),env);
   assert.equal(response.status,200);
-  assert.equal(queries.filter(sql=>/CREATE|ALTER|PRAGMA/i.test(sql)).length,0);
+  assert.equal(queries.filter(sql=>/\b(?:CREATE|ALTER|PRAGMA)\b/i.test(sql)).length,0);
   assert.ok(queries.some(sql=>/SELECT ip_v4,ip_v6 FROM metrics_history/.test(sql)));
   assert.equal(queries.filter(sql=>/SELECT \* FROM metrics_history/.test(sql)).length,0);
   assert.ok(queries.length<=9,`节点热请求 SQL 数量 ${queries.length} 超出预算`);

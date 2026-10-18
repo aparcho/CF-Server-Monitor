@@ -7,7 +7,13 @@ import { ensureAutoTables, finishIperfAutoCheck, getIperfAutoTarget, listIperfEn
 const SERVER_ID = /^[a-zA-Z0-9._:-]{1,100}$/;
 const BEIJING_OFFSET = 8 * 3600_000;
 
-export async function ensureIperfJobTables(db) {
+const schemaReady = new WeakMap();
+export function ensureIperfJobTables(db) {
+  if(schemaReady.has(db))return schemaReady.get(db);
+  const pending=initializeSchema(db).catch(error=>{schemaReady.delete(db);throw error;});
+  schemaReady.set(db,pending);return pending;
+}
+async function initializeSchema(db) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS iperf_jobs (
     id TEXT PRIMARY KEY, server_id TEXT NOT NULL, source TEXT NOT NULL,
     status TEXT NOT NULL, duration_seconds INTEGER NOT NULL, scheduled_slot TEXT,

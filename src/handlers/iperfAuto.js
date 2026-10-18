@@ -1,10 +1,16 @@
 import { isIP } from 'node:net';
-import { getLatestMetrics } from '../database/schema.js';
+import { getServerHistoryInfo, getHistoryIdRange } from '../database/indexOptimization.js';
 import { ensureIperfJobTables } from './iperfJobs.js';
 import { createBadRequestResponse as bad, createSuccessResponse as ok, createUnauthorizedResponse as denied } from '../utils/errors.js';
 
 const ID = /^[a-zA-Z0-9._:-]{1,100}$/;
-export async function ensureAutoTables(db) {
+const schemaReady = new WeakMap();
+export function ensureAutoTables(db) {
+  if(schemaReady.has(db))return schemaReady.get(db);
+  const pending=initializeSchema(db).catch(error=>{schemaReady.delete(db);throw error;});
+  schemaReady.set(db,pending);return pending;
+}
+async function initializeSchema(db) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS iperf_enrollments (
     server_id TEXT PRIMARY KEY, enrollment_id TEXT NOT NULL, ipv4 TEXT, ipv6 TEXT,
     status TEXT NOT NULL, error TEXT, checked_key TEXT, last_seen INTEGER NOT NULL
@@ -29,8 +35,12 @@ function publicAddress(value, family) {
 }
 const targetKey = row => `${row.enrollment_id}|${row.ipv4 || ''}|${row.ipv6 || ''}`;
 const runnerAuth = (request, env) => !!env.IPERF_REPORT_TOKEN && request.headers.get('X-Iperf-Token') === env.IPERF_REPORT_TOKEN;
+let signingSecret,signingPromise;
 async function signingKey(env) {
-  return crypto.subtle.importKey('raw', new TextEncoder().encode(env.API_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+  if(signingSecret===env.API_SECRET && signingPromise)return signingPromise;
+  signingSecret=env.API_SECRET;
+  signingPromise=crypto.subtle.importKey('raw', new TextEncoder().encode(env.API_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+  return signingPromise;
 }
 const tokenInput = row => new TextEncoder().encode(`cfsm-iperf-node-v1:${row.server_id}:${row.enrollment_id}`);
 async function nodeToken(row, env) {
@@ -73,7 +83,12 @@ export async function handleIperfNode(request, env) {
   if (!await nodeAuth(request, row, env)) return denied();
   const server = await env.DB.prepare('SELECT * FROM servers WHERE id=?').bind(data.id).first();
   if (!server) return bad('unknownServer');
-  const metrics = await getLatestMetrics(env.DB, data.id, server);
+  // 心跳只校验公网地址，不读取/转换整份系统指标，降低免费 Worker 每次 CPU 消耗。
+  const info=await getServerHistoryInfo(env.DB,data.id,server);
+  let metrics=null;
+  if(info.partitionId){const range=getHistoryIdRange(info.partitionId,info.startTimestamp>0?info.startTimestamp:null);
+    metrics=await env.DB.prepare('SELECT ip_v4,ip_v6 FROM metrics_history WHERE id>=? AND id<=? ORDER BY id DESC LIMIT 1').bind(range.startId,range.endId).first();
+  }
   let ipv4, ipv6;
   try { ipv4 = publicAddress(data.ipv4, 4); ipv6 = publicAddress(data.ipv6, 6); } catch { return bad('invalidPublicAddress'); }
   const now = Date.now();

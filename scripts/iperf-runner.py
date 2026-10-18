@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Claim CFSM iperf jobs on deb and run only locally allowlisted targets."""
 import argparse
+import importlib.util
 import fcntl
 import ipaddress
 import json
@@ -259,6 +260,8 @@ def main():
     count = 0
     listener = None
     auto_listener = None
+    durable_listener = None
+    cleanup_ok = True
     target = next((x for x in config['targets'] if x['id'] == job['server_id']), None)
     if target is None or job.get('source') == 'onboarding':
         target = job.get('auto_target')
@@ -267,7 +270,13 @@ def main():
             raise ValueError('target not configured on deb')
         if int(target.get('port', 5202)) != 5202:
             raise ValueError('only isolated port 5202 is supported')
-        if target.get('transport') == 'worker':
+        if target.get('listener_mode') == 'receipt':
+            spec=importlib.util.spec_from_file_location('iperf_control',Path(__file__).with_name('iperf-control.py'));control=importlib.util.module_from_spec(spec);spec.loader.exec_module(control)
+            families=tuple(f for f in (4,6) if target.get(f'ipv{f}'))
+            sources=public_sources(config['worker_url'],families)
+            durable_listener=control.Listener(remote,audit,target['management_host'],target.get('identity_file'),job['id'],sources)
+            durable_listener.start()
+        elif target.get('transport') == 'worker':
             families = tuple(f for f in (4, 6) if target.get(f'ipv{f}'))
             sources = public_sources(config['worker_url'], families)
             auto_listener = job['id']
@@ -294,19 +303,25 @@ def main():
     except Exception as exc:
         error = str(exc)[:200]
     finally:
+        if durable_listener:
+            try:durable_listener.stop()
+            except Exception as exc:
+                cleanup_ok=False;error=(error+'; ' if error else '')+'cleanup: '+str(exc)[:160]
         if auto_listener:
             try:
                 worker_listener(config['worker_url'], token, auto_listener, 'stop')
             except Exception as exc:
+                cleanup_ok=False
                 error = f'{error or ""}; cleanup: {exc}'[:200]
         if listener:
             try:
                 stop_listener(target['management_host'], *listener, target.get('identity_file'),
                     target.get('listener_mode') == 'ufw-source')
             except Exception as exc:
+                cleanup_ok=False
                 error = (error + '; ' if error else '') + f'cleanup: {exc}'
         completion={'id':job['id'],'status':'failed' if error else 'completed',
-                    'result_count':count,'error':error,'cleanup_confirmed':not bool(error)}
+                    'result_count':count,'error':error,'cleanup_confirmed':cleanup_ok}
         write_receipt(state_dir/'pending-finish'/(job['id']+'.json'),completion)
         flush_completions(config['worker_url'],token,state_dir)
     if error:

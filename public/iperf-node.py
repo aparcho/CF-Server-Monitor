@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 from urllib.parse import urlsplit
 
 ROOT = Path('/etc/cfsm-iperf')
@@ -29,8 +30,18 @@ def api(config, payload, bootstrap=False):
     request = urllib.request.Request(config['worker_url'] + ('/api/iperf/bootstrap' if bootstrap else '/api/iperf/node'),
         data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', 'User-Agent': 'CFSM-Iperf-Node/1.0',
         **({} if bootstrap else {'X-Iperf-Node-Token': config['token']})})
-    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=20) as response:
-        return json.load(response)
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=20) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        # 不输出请求头/令牌；错误正文保留结构化原因，便于区分额度、网关与业务故障。
+        raw=exc.read(2048).decode('utf-8','replace')
+        try:
+            data=json.loads(raw);detail={k:data[k] for k in ('error','code','reason') if k in data}
+        except ValueError:detail={'body_type':'non-json','bytes':len(raw),'message':raw.strip()[:200] if len(raw)<200 and '<' not in raw else 'html response'}
+        print(json.dumps({'event':'node_api_error','status':exc.code,'detail':detail,'has_session':bool(payload.get('session')),'job_id':payload.get('session',{}).get('job_id')}),flush=True)
+        raise
+
 
 def unit(job):
     if not re.fullmatch(r'[a-f0-9-]{36}', job):

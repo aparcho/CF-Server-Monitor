@@ -13,6 +13,7 @@ export async function ensureAutoTables(db) {
     job_id TEXT PRIMARY KEY, server_id TEXT NOT NULL, target_key TEXT NOT NULL,
     state TEXT NOT NULL, sources TEXT NOT NULL, expires_at INTEGER NOT NULL, error TEXT
   )`).run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_iperf_listener_server_expiry ON iperf_listeners(server_id,expires_at DESC)').run();
 }
 function publicAddress(value, family) {
   if (value == null || value === '') return null;

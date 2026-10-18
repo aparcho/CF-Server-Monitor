@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { advanceAlert,nikkiToken,handleNikkiReport,handleNikkiStatus,scoreProbe } from '../src/handlers/nikki.js';
 import { DatabaseSync } from 'node:sqlite';
+import { clearAllCaches } from '../src/utils/cache.js';
 import { buildHistoryId } from '../src/database/indexOptimization.js';
 
 test('在用线路连续低分五分钟才提醒，保持低分只触发一次，恢复需达到65分',()=>{
@@ -99,8 +100,24 @@ test('上报到持久评分到公开徽章闭环：重放不重复，离开线�
   assert.equal(Number.isInteger(saved),false);
   assert.equal(saved,data.routes[0].score);assert.equal(saved,data.routes[0].estimate.score);
   assert.ok(Math.abs(saved*10-Math.round(saved*10))<1e-8);
-  await post({...body,observed_at:now+7,routes:[]});assert.equal((await (await get()).json()).routes.length,0);
+  clearAllCaches();
+  let historyReads=0,speedReads=0;
+  const countedPrepare=DB.prepare.bind(DB);
+  DB.prepare=sql=>{
+    if(sql.includes('WITH history_rows AS'))historyReads++;
+    if(sql==='SELECT * FROM iperf_results WHERE server_id=? ORDER BY tested_at DESC LIMIT 80')speedReads++;
+    const statement=countedPrepare(sql);
+    if(sql.includes('WITH history_rows AS')){
+      const bind=statement.bind.bind(statement);
+      statement.bind=(...args)=>{assert.ok(args[0]>=buildHistoryId(1,Date.now()-11*60000));return bind(...args);};
+    }
+    return statement;
+  };
+  await post({...body,observed_at:now+7,routes:[{server_id:'vps',family:'ipv4',connections:1},{server_id:'vps',family:'ipv6',connections:1}]});
+  assert.equal(historyReads,1);assert.equal(speedReads,1);
+  data=await (await get()).json();assert.equal(data.routes.length,2);
+  await post({...body,observed_at:now+8,routes:[]});assert.equal((await (await get()).json()).routes.length,0);
   sqlite.prepare('DELETE FROM servers').run();
-  await post({...body,observed_at:now+8});assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM nikki_routes').get().n,0);
+  await post({...body,observed_at:now+9});assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM nikki_routes').get().n,0);
   sqlite.close();
 });

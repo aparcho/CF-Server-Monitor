@@ -17,6 +17,9 @@ export async function ensureIperfJobTables(db) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS iperf_claim_requests (request_id TEXT PRIMARY KEY,job_id TEXT UNIQUE NOT NULL,server_id TEXT NOT NULL,created_at INTEGER NOT NULL)`).run();
   await db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_iperf_job_slot ON iperf_jobs(server_id, scheduled_slot) WHERE scheduled_slot IS NOT NULL').run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_iperf_job_status ON iperf_jobs(status, created_at)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_iperf_job_created ON iperf_jobs(created_at DESC)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_iperf_job_server_time ON iperf_jobs(server_id,created_at DESC)').run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_iperf_refresh_time ON iperf_jobs(server_id,created_at) WHERE source='refresh'").run();
   await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_iperf_one_active ON iperf_jobs(server_id) WHERE status IN ('queued','running')").run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS iperf_schedules (
     server_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
@@ -116,8 +119,9 @@ export async function enqueueExpiredIperfJobs(db,now=Date.now()) {
   await ensureIperfJobTables(db);await ensureIperfResultsTable(db);
   const policy=refreshPolicy(now);
   const candidates=(await db.prepare(`SELECT s.server_id,t.last_seen,
-    (SELECT MIN(latest_at) FROM (SELECT MAX(tested_at) AS latest_at FROM iperf_results
-      WHERE server_id=s.server_id AND source='deb' GROUP BY family)) AS oldest_family_at,
+    (SELECT MIN(latest_at) FROM (
+      SELECT MAX(tested_at) AS latest_at FROM iperf_results WHERE server_id=s.server_id AND source='deb' AND family='ipv4'
+      UNION ALL SELECT MAX(tested_at) AS latest_at FROM iperf_results WHERE server_id=s.server_id AND source='deb' AND family='ipv6')) AS oldest_family_at,
     (SELECT MAX(created_at) FROM iperf_jobs WHERE server_id=s.server_id) AS last_attempt_at,
     (SELECT status FROM iperf_jobs WHERE server_id=s.server_id ORDER BY created_at DESC LIMIT 1) AS last_status,
     (SELECT COUNT(*) FROM iperf_jobs WHERE server_id=s.server_id AND source='refresh' AND created_at>?) AS refresh_count
@@ -145,10 +149,11 @@ export async function enqueueExpiredIperfJobs(db,now=Date.now()) {
       AND NOT EXISTS(SELECT 1 FROM iperf_jobs WHERE server_id=? AND status='failed' AND created_at>?)
       AND (SELECT COUNT(*) FROM iperf_jobs WHERE server_id=? AND source='refresh' AND created_at>?)<?
       AND EXISTS(SELECT 1 FROM iperf_schedules WHERE server_id=? AND expiry_refresh_enabled=1)
-      AND (SELECT MIN(latest_at) FROM (SELECT MAX(tested_at) AS latest_at FROM iperf_results WHERE server_id=? AND source='deb' GROUP BY family))<?`)
+      AND (SELECT MIN(latest_at) FROM (SELECT MAX(tested_at) AS latest_at FROM iperf_results WHERE server_id=? AND source='deb' AND family='ipv4'
+      UNION ALL SELECT MAX(tested_at) AS latest_at FROM iperf_results WHERE server_id=? AND source='deb' AND family='ipv6'))<?`)
       .bind(crypto.randomUUID(),candidate.server_id,policy.duration_seconds,slot,now,candidate.server_id,
         candidate.server_id,now-policy.min_gap_ms,candidate.server_id,now-policy.failure_gap_ms,
-        candidate.server_id,now-policy.window_ms,policy.limit,candidate.server_id,candidate.server_id,now-policy.age_ms).run();
+        candidate.server_id,now-policy.window_ms,policy.limit,candidate.server_id,candidate.server_id,candidate.server_id,now-policy.age_ms).run();
     const inserted=result.meta?.changes||0;count+=inserted;
     await iperfAudit(db,'expiry_refresh_enqueue',{server_id:candidate.server_id,oldest_family_at:candidate.oldest_family_at,inserted,slot,policy});
   }

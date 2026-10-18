@@ -19,3 +19,20 @@ test('数据库日志写失败仍保留控制台证据，业务响应与异常�
     assert.equal(typeof await iperfAudit(db,'test'), 'string');
   } finally {console.log=originalLog;console.error=originalError;}
 });
+
+test('空轮询只按15分钟采样写D1，关键事件与错误不采样，控制台保留全部', async t => {
+  const {shouldPersistIperfAudit}=await import('../src/utils/iperfAudit.js');
+  const off=60_000,on=15*60_000;
+  for(const phase of ['claim_empty','targets_refresh_begin','targets_refresh_complete','expiry_refresh_checked']){
+    assert.equal(shouldPersistIperfAudit(phase,{},off),false);
+    assert.equal(shouldPersistIperfAudit(phase,{},on),true);
+  }
+  assert.equal(shouldPersistIperfAudit('request_exit',{path:'/api/iperf/jobs/claim',status:200},off),false);
+  assert.equal(shouldPersistIperfAudit('request_exit',{path:'/api/iperf/jobs/claim',status:500},off),true);
+  for(const phase of ['cron_enter','cron_complete','dispatch_selected','enqueue_result','job_claimed','job_finished','request_error','expiry_refresh_enqueue'])assert.equal(shouldPersistIperfAudit(phase,{},off),true);
+  assert.equal(shouldPersistIperfAudit('expiry_refresh_skipped',{reason:'target_not_ready'},off),true);
+  const logs=[];t.mock.method(Date,'now',()=>off);t.mock.method(console,'log',line=>logs.push(JSON.parse(line)));
+  let touched=false;
+  await iperfAudit({prepare(){touched=true;throw new Error('must not touch D1')}},'claim_empty');
+  assert.equal(touched,false);assert.equal(logs[0].phase,'claim_empty');assert.equal(logs[0].d1_sampled,true);
+});

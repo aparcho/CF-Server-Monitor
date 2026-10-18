@@ -48,11 +48,16 @@ export function scoreProbe(family, rows, metrics) {
   return {taskName:family==='ipv4'?'移动V4':'移动V6',lastValue:typeof metrics?.[`ping_${field}`]==='number'?metrics[`ping_${field}`]:null,
     loss:count?lossSum/count:null,samples,emptyTimes,lossSamples,loadState:'ready'};
 }
-async function evaluateRoute(db, route, server, now) {
-  const metrics=await getLatestMetrics(db,server.id,server);
-  const fields=['ping_node_1','loss_node_1','ping_node_2','loss_node_2'];
-  const rows=await getMetricsHistory(db,server.id,2,fields.join(','),server);
-  const results=(await db.prepare('SELECT * FROM iperf_results WHERE server_id=? ORDER BY tested_at DESC LIMIT 80').bind(server.id).all()).results||[];
+async function evaluateRoute(db, route, server, now, snapshots) {
+  // 评分只使用近10分钟，不再为每个地址族读取2小时历史。
+  // 同一次上报中，同一节点双栈共享读快照，保持评分输入一致。
+  if(!snapshots.has(server.id))snapshots.set(server.id,Promise.all([
+    getLatestMetrics(db,server.id,server),
+    getMetricsHistory(db,server.id,10/60,'ping_node_1,loss_node_1,ping_node_2,loss_node_2',server),
+    db.prepare('SELECT * FROM iperf_results WHERE server_id=? ORDER BY tested_at DESC LIMIT 80').bind(server.id).all()
+  ]));
+  const [metrics,rows,resultSet]=await snapshots.get(server.id);
+  const results=resultSet.results||[];
   // 节点可继承全局探针配置，不能用 servers.node_N 为空来判定未配置；以该字段实测样本为准。
   return estimateNetwork(route.family,[scoreProbe(route.family,rows,metrics)],results,now,!metrics || now-metrics.timestamp>300000);
 }
@@ -70,13 +75,13 @@ export async function handleNikkiReport(request,env) {
   const previous=(await env.DB.prepare('SELECT * FROM nikki_routes').all()).results||[];
   const published=await env.DB.prepare('SELECT * FROM nikki_monitor WHERE id=1').first();
   if(published && published.observed_at>=body.observed_at) return ok({success:true,replayed:true});
-  const settings=await loadSettings(env.DB),evaluated=[];
+  const settings=await loadSettings(env.DB),evaluated=[],snapshots=new Map();
   for(const route of body.routes) {
     const server=await env.DB.prepare('SELECT * FROM servers WHERE id=?').bind(route.server_id).first();
     if(!server) continue;
     const old=previous.find(p=>p.server_id===route.server_id && p.family===route.family);
     let estimate;
-    try {estimate=await evaluateRoute(env.DB,route,server,now);} catch(error) {console.error('[Nikki] score failed',route.server_id,error.message);estimate={...estimateNetwork(route.family,[],[],now,false),reason:'评分数据读取失败'};}
+    try {estimate=await evaluateRoute(env.DB,route,server,now,snapshots);} catch(error) {console.error('[Nikki] score failed',route.server_id,error.message);estimate={...estimateNetwork(route.family,[],[],now,false),reason:'评分数据读取失败'};}
     const state=route.connections>0?advanceAlert(old,estimate.score,body.observed_at):{low_since:null,alerted:0,fire:false};
     let notification_error=null;
     if(state.fire) {

@@ -32,3 +32,22 @@ test('调度审计时间清理使用索引，分钟调度不再反复全表清�
  const entry=await readFile(new URL('../src/index.js',import.meta.url),'utf8');
  assert.match(entry,/if \(cron === '0 \* \* \* \*'\) \{[\s\S]*DELETE FROM iperf_dispatch_audit/);
 });
+
+test('任务列表、逐节点补测和监听查找在历史增长后仍使用相应索引',async()=>{
+ const {ensureIperfJobTables}=await import('../src/handlers/iperfJobs.js');
+ const {ensureAutoTables}=await import('../src/handlers/iperfAuto.js');
+ const {ensureIperfResultsTable}=await import('../src/handlers/iperf.js');
+ const db=new DatabaseSync(':memory:');
+ const DB={prepare(sql){let args=[];return {bind(...v){args=v;return this},async all(){return {results:db.prepare(sql).all(...args)}},async run(){return {meta:{changes:db.prepare(sql).run(...args).changes}}}}}};
+ await ensureIperfJobTables(DB);await ensureAutoTables(DB);await ensureIperfResultsTable(DB);
+ const job=db.prepare("INSERT INTO iperf_jobs(id,server_id,source,status,duration_seconds,created_at) VALUES (?,?,?,'completed',5,?)");
+ db.exec('BEGIN');for(let i=0;i<3000;i++)job.run('job'+i,'server'+i%6,i%3?'manual':'refresh',i*60000);db.exec('COMMIT');
+ for(const [sql,args,index] of [
+  ["SELECT MAX(tested_at) FROM iperf_results WHERE server_id=? AND source='deb' AND family='ipv4'",['server1'],'idx_iperf_family_latest'],
+  ['SELECT * FROM iperf_jobs ORDER BY created_at DESC LIMIT 100',[],'idx_iperf_job_created'],
+  ['SELECT status FROM iperf_jobs WHERE server_id=? ORDER BY created_at DESC LIMIT 1',['server1'],'idx_iperf_job_server_time'],
+  ["SELECT COUNT(*) FROM iperf_jobs WHERE server_id=? AND source='refresh' AND created_at>?",['server1',100000],'idx_iperf_refresh_time'],
+  ["SELECT * FROM iperf_listeners WHERE server_id=? AND state IN ('preparing','ready') ORDER BY expires_at DESC LIMIT 1",['server1'],'idx_iperf_listener_server_expiry']
+ ])assert.ok(db.prepare('EXPLAIN QUERY PLAN '+sql).all(...args).some(row=>row.detail.includes(index)),sql);
+ db.close();
+});

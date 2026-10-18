@@ -14,6 +14,7 @@ export async function ensureIperfResultsTable(db) {
     PRIMARY KEY (run_id, server_id, family, direction)
   )`).run();
   await db.prepare('CREATE INDEX IF NOT EXISTS idx_iperf_server_time ON iperf_results(server_id, tested_at DESC)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_iperf_family_latest ON iperf_results(server_id,source,family,tested_at DESC)').run();
 }
 
 export async function getIperfJobResults(db) {

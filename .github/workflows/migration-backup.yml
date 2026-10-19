@@ -1,5 +1,8 @@
 name: Encrypted migration backup
 on:
+  push:
+    branches: [archive/cf-custom-20261019]
+    paths: [.github/workflows/migration-backup.yml]
   workflow_dispatch:
 jobs:
   backup:

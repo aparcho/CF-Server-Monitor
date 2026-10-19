@@ -1,0 +1,26 @@
+name: Encrypted migration backup
+on:
+  workflow_dispatch:
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 导出迁移前 D1 快照
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          D1_ID: ${{ secrets.D1_DATABASE_ID }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; fs.writeFileSync("/tmp/backup.toml",`name="server-monitor-pro"\ncompatibility_date="2024-12-01"\n[[d1_databases]]\nbinding="DB"\ndatabase_name="server-monitor-db"\ndatabase_id="${process.env.D1_ID}"\n`);'
+          npx --yes wrangler@4 d1 export DB --remote --output /tmp/cf-before.sql --config /tmp/backup.toml
+          gzip /tmp/cf-before.sql
+          openssl cms -encrypt -binary -aes-256-cbc -in /tmp/cf-before.sql.gz -out backup.cms -outform DER .github/backup/recipient.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encrypted-cf-before-native
+          path: backup.cms
+          retention-days: 2
